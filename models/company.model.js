@@ -1,6 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 
-const SupplierSchema = new Schema(
+const CompanySchema = new Schema(
   {
     userId: {
       type: Schema.Types.ObjectId,
@@ -43,6 +43,6 @@ const SupplierSchema = new Schema(
 );
 
 // Optional: performance optimization
-SupplierSchema.index({ companyName: "text" });
+CompanySchema.index({ companyName: "text" });
 
-export const SupplierList = mongoose.model("SupplierList", SupplierSchema);
+export const CompanyList = mongoose.model("CompanyList", CompanySchema);

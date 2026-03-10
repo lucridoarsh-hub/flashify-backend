@@ -36,7 +36,7 @@ try {
 // Path to company logo
 const logoPath = path.join(__dirname, 'assets', 'company.png');
 
-// Professional color scheme
+// Professional color scheme (updated with commit & opposite line colors)
 const COLORS = {
   primary: '#0f172a',
   secondary: '#2563eb',
@@ -49,6 +49,9 @@ const COLORS = {
   success: '#16a34a',
   warning: '#d97706',
   shadow: '#0000001a',
+  commitBg: '#00FF00',        // Green for commits
+  commitText: '#000000',      // Black text on green
+  oppositeLines: '#FF0000',   // Red for opposite lines
 };
 
 // Font settings
@@ -73,6 +76,7 @@ const LABEL_PADDING = 12;
 const SHADOW_OFFSET = 2;
 const SCALE_BAR_LENGTH = 100;
 const FOLD_LABEL_DISTANCE = 60; // Fixed 20mm distance for fold labels
+const OPPOSITE_LINES_LENGTH = 150; // Shadow projection length for opposite lines
 
 // Helper function to validate points
 const validatePoints = (points) => {
@@ -88,8 +92,8 @@ const validatePoints = (points) => {
   );
 };
 
-// Helper function to calculate bounds for a path
-const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPositions = {}) => {
+// Helper function to calculate bounds for a path (including commits and opposite lines)
+const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPositions = {}, commits = [], showOppositeLines = false, oppositeLinesDirection = 'far') => {
   if (!validatePoints(path.points)) {
     console.warn('Invalid points array in path:', path);
     return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
@@ -149,6 +153,41 @@ const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPo
     minY = Math.min(minY, labelY - 30);
     maxY = Math.max(maxY, labelY + ARROW_SIZE + 30);
   });
+
+  // Process commit positions
+  commits.forEach(commit => {
+    if (commit.position) {
+      const cx = parseFloat(commit.position.x);
+      const cy = parseFloat(commit.position.y);
+      // Commit label dimensions (approx)
+      const labelWidth = 90;
+      const labelHeight = 36;
+      minX = Math.min(minX, cx - labelWidth/2 - 10);
+      maxX = Math.max(maxX, cx + labelWidth/2 + 10);
+      minY = Math.min(minY, cy - labelHeight/2 - 10);
+      maxY = Math.max(maxY, cy + labelHeight/2 + 10);
+    }
+  });
+
+  // Process opposite lines if enabled
+  if (showOppositeLines && path.points.length > 1) {
+    // Determine angle based on direction
+    let angle = oppositeLinesDirection === 'far' ? 135 : 315;
+    const angleRad = angle * Math.PI / 180;
+    const dx = Math.cos(angleRad);
+    const dy = Math.sin(angleRad);
+
+    path.points.forEach(point => {
+      const x = parseFloat(point.x);
+      const y = parseFloat(point.y);
+      const projX = x + dx * OPPOSITE_LINES_LENGTH;
+      const projY = y + dy * OPPOSITE_LINES_LENGTH;
+      minX = Math.min(minX, x, projX);
+      maxX = Math.max(maxX, x, projX);
+      minY = Math.min(minY, y, projY);
+      maxY = Math.max(maxY, y, projY);
+    });
+  }
 
   // Process border
   if (showBorder && path.points.length > 1) {
@@ -333,8 +372,8 @@ const formatQxL = (quantitiesAndLengths) => {
   return quantitiesAndLengths.map(item => `${item.quantity} x ${parseFloat(item.length).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`).join('   ');
 };
 
-// Generate SVG string with proper fold label positions
-const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirection, labelPositions = {}) => {
+// Generate SVG string with proper fold label positions, commits, and opposite lines
+const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirection, labelPositions = {}, commits = [], showOppositeLines = false, oppositeLinesDirection = 'far') => {
   if (!validatePoints(path.points)) {
     console.warn('Skipping SVG generation for path due to invalid points:', path);
     return '<svg width="100%" height="100%" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><text x="50" y="50" font-size="14" text-anchor="middle" fill="#000000">Invalid path data</text></svg>';
@@ -414,6 +453,24 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
       return `${x},${y}`;
     }).join(' L');
     svgContent += `<path d="M${d}" stroke="#000000" stroke-width="${2.5 * scaleFactor}" fill="none"/>`;
+  }
+
+  // Generate opposite lines if enabled
+  if (showOppositeLines && path.points.length > 0) {
+    let angle = oppositeLinesDirection === 'far' ? 135 : 315;
+    const angleRad = angle * Math.PI / 180;
+    const dx = Math.cos(angleRad);
+    const dy = Math.sin(angleRad);
+    
+    path.points.forEach((point) => {
+      const x = parseFloat(point.x);
+      const y = parseFloat(point.y);
+      const projX = x + dx * OPPOSITE_LINES_LENGTH;
+      const projY = y + dy * OPPOSITE_LINES_LENGTH;
+      const {x: x1, y: y1} = transformCoord(x, y);
+      const {x: x2, y: y2} = transformCoord(projX, projY);
+      svgContent += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${COLORS.oppositeLines}" stroke-width="${3.5 * scaleFactor}" stroke-opacity="0.5"/>`;
+    });
   }
 
   // Generate offset segments for border
@@ -769,6 +826,29 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
     `;
   }).join('');
 
+  // Generate commit labels
+  commits.forEach((commit, index) => {
+    if (commit.position) {
+      const {x: posX, y: posY} = transformCoord(commit.position.x, commit.position.y);
+      const commitMessage = commit.message || 'Commit';
+      const commitWidth = Math.max(90, commitMessage.length * (fontSize * 0.6) + 20);
+      
+      // No tail for commit labels (they float freely)
+      svgContent += `
+        <g filter="url(#dropShadow)">
+          <rect x="${posX - commitWidth/2}" y="${posY - labelHeight/2}"
+                width="${commitWidth}" height="${labelHeight}"
+                fill="${COLORS.commitBg}" rx="${labelRadius}"
+                stroke="#000000" stroke-width="0.5"/>
+          <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="${FONTS.body}" font-weight="bold"
+                fill="${COLORS.commitText}" text-anchor="middle" alignment-baseline="middle">
+            ${commitMessage}
+          </text>
+        </g>
+      `;
+    }
+  });
+
   return `<svg width="100%" height="100%" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">
     ${svgDefs}
     <g>${gridLines}</g>
@@ -881,7 +961,7 @@ const drawOrderDetailsTable = (doc, JobReference, Number, OrderContact, OrderDat
   return y + 25;
 };
 
-// Helper function to draw instructions
+// Helper function to draw instructions (updated with commit and opposite lines)
 const drawInstructions = (doc, y) => {
   const margin = 50;
   const pageWidth = doc.page.width;
@@ -891,7 +971,9 @@ const drawInstructions = (doc, y) => {
     'Arrow points to the (solid) coloured side',
     '90° and 45° degrees are not labelled',
     'F = Total number of folds, each crush counts as 2 folds',
-    'End fold labels are positioned 20mm away from the diagram for better visibility'
+    'End fold labels are positioned 20mm away from the diagram for better visibility',
+    'Green labels are commit points (annotations)',
+    'Red lines are reference lines (opposite lines)'
   ];
 
   instructions.forEach((instruction, index) => {
@@ -1233,6 +1315,10 @@ export const generatePdf = async (req, res) => {
     const showBorder = projectData.showBorder || false;
     const borderOffsetDirection = projectData.borderOffsetDirection || 'inside';
     const labelPositions = projectData.labelPositions || {};
+    // NEW: opposite lines and commits
+    const showOppositeLines = projectData.showOppositeLines || false;
+    const oppositeLinesDirection = projectData.oppositeLinesDirection || 'far';
+    const commits = projectData.commits || [];
 
     // Initialize groupedQuantitiesAndLengths early
     const validPaths = projectData.paths.filter(path => validatePoints(path.points));
@@ -1316,8 +1402,8 @@ export const generatePdf = async (req, res) => {
 
         try {
           const pathData = validPaths[i];
-          const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions);
-          const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions);
+          const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
+          const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
 
           // Convert SVG to PNG
           const imageBuffer = await sharp(Buffer.from(svgString))
@@ -1393,8 +1479,8 @@ export const generatePdf = async (req, res) => {
 
           try {
             const pathData = validPaths[i];
-            const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions);
-            const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions);
+            const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
+            const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
 
             // Convert SVG to PNG
             const imageBuffer = await sharp(Buffer.from(svgString))

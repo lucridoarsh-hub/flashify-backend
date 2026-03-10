@@ -1,5 +1,5 @@
 import express from 'express'
-import { addTeamMemberEmail, fetchSelectedProjectData, fetchTeamEmails, fetchUploadOrder, fetchUploadProjectData, forgetPassword, login,  Profile, register, resetPassword, resetPasswordOtpVerify, sendPdfToTeamFromEmail, UpdateJobOrder, UpdateProfile,  updateUploadProjectPdf,  UploadProjectPdf } from '../controllers/auth.controller.js'
+import { addTeamMemberEmail, CreateCompany, DeleteCompany, fetchSelectedProjectData, fetchTeamEmails, fetchUploadOrder, fetchUploadProjectData, forgetPassword, GetMyCompany, login,  Profile, register, resetPassword, resetPasswordOtpVerify, sendPdfToTeamFromEmail, UpdateCompany, UpdateJobOrder, UpdateProfile,  updateUploadProjectPdf,  UploadProjectPdf } from '../controllers/auth.controller.js'
 import { CheckAuth } from '../middlewares/CheckAuth.js'
 import { AddSupplier, AddTeammate, EditSupplierDetails, fetchSupplierList, fetchTeammatesOrders, fetchTeammateTeams, fetchUserSupplier, fetchUserTeammate, SupplierDetails } from '../controllers/supplier.controller.js'
 import { EditFreelancerDetails, fetchFreelancerList, fetchOtherFreelancerDetails, fetchOtherUserDetails, FreelancerDetails } from '../controllers/freelancer.controller.js'
@@ -56,3 +56,7 @@ AuthRouter.get('/fetchuserteammate/:userId',fetchUserTeammate)
 AuthRouter.get('/fetchusersupplier/:userId',fetchUserSupplier)
 AuthRouter.get('/fetchtemmateorder/:userId',fetchTeammatesOrders)
 AuthRouter.get('/fetchsupplierandteammate/:userId',fetchTeammateTeams)
+AuthRouter.post('/create-company/:userId',CreateCompany)
+AuthRouter.put('/update-company/:companyId',UpdateCompany)
+AuthRouter.delete('/delete-company/:companyId',DeleteCompany)
+AuthRouter.get('/fetch-company/:userId',GetMyCompany)

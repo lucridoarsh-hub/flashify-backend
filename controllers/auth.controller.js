@@ -11,6 +11,7 @@ import path from 'path';
 import mongoose from 'mongoose';
 import { ProjectData } from '../models/project.model.js';
 import { ProjectOrder } from '../models/ProjectOrder.model.js';
+import { CompanyList } from '../models/company.model.js';
 cloudinary.config({
   cloud_name: process.env.CLOUDNARY_NAME,
   api_key: process.env.CLOUDNARY_API,
@@ -267,132 +268,187 @@ export const UpdateProfile = async (req, res) => {
   }
 };
 
+
 export const register = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
-    const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const {
+      username,
+      email,
+      password,
+      phoneNumber,
+      affiliateCode,
+      teamMemberEmails,
+    } = req.body;
 
-    // Basic validation
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" });
+    const clientIP =
+      req.headers["x-forwarded-for"]?.split(",")[0] ||
+      req.socket?.remoteAddress ||
+      req.ip;
+
+    // 🔹 Required field validation
+    if (!username || !email || !password || !phoneNumber) {
+      return res.status(400).json({
+        message: "Username, email, password, and phone number are required",
+      });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    // 🔹 Phone format validation (+XXXXXXXXXX)
+    const phoneRegex = /^\+\d{8,15}$/;
+    if (!phoneRegex.test(phoneNumber)) {
+      return res.status(400).json({
+        message: "Phone number must include country code (e.g. +912345678901)",
+      });
+    }
+
+    // 🔹 Check if user already exists
+    const existingUser = await User.findOne({
+      $or: [{ email }, { username }, { phoneNumber }],
+    });
+
     if (existingUser) {
-      return res.status(409).json({ message: "User with that email or username already exists" });
+      return res.status(409).json({
+        message: "User already exists with this email, username, or phone number",
+      });
     }
 
-    // Hash the password
+    // 🔹 Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new user
+    // 🔹 Create user
     const newUser = new User({
       username,
       email,
+      phoneNumber,
+      affiliateCode: affiliateCode || undefined,
+      teamMemberEmails: teamMemberEmails || [],
       password: hashedPassword,
+
       ipAddress: [
         {
           latestIP: clientIP,
-          oldIP: '',
-          loginDate: new Date()
-        }
+          loginDate: new Date(),
+        },
       ],
+
       oldPassword: [
         {
           password: hashedPassword,
-          passwordDate: new Date()
-        }
+          passwordDate: new Date(),
+        },
       ],
-      lastLogin: new Date()
+
+      lastLogin: new Date(),
     });
 
     await newUser.save();
 
-    // ✅ Generate token instead of cookie
-    const token = jwt.sign({ userId: newUser._id }, process.env.SECRET_TOKEN_KEY, {
-      expiresIn: '7d',
-    });
+    // 🔹 Generate JWT (mobile-friendly)
+    const token = jwt.sign(
+      { userId: newUser._id, role: newUser.role },
+      process.env.SECRET_TOKEN_KEY,
+      { expiresIn: "7d" }
+    );
 
-    // ✅ Return token in response (mobile-friendly)
     return res.status(201).json({
       message: "User registered successfully",
       userId: newUser._id,
-      role : newUser.role,
-      token, // <--- Mobile app will save this in AsyncStorage
+      company :  newUser.company,
+      role: newUser.role,
+      token,
     });
-
   } catch (error) {
     console.error("Register error:", error);
-    return res.status(500).json({ message: "Internal server error" });
+    return res.status(500).json({
+      message: "Internal server error",
+    });
   }
 };
 
 
 
-const loginAttempts = {}; // In-memory store
+
+const loginAttempts = {}; // in-memory (OK for now)
 
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
+    const clientIP =
+      req.headers["x-forwarded-for"]?.split(",")[0] ||
+      req.socket?.remoteAddress ||
+      req.ip;
+
+    // 🔹 Validation
     if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
+      return res.status(400).json({
+        message: "Email and password are required",
+      });
     }
 
-    // Rate Limiting by IP
+    // 🔹 Rate limiting (per IP)
     const now = Date.now();
     const attempts = loginAttempts[clientIP] || [];
-    const recentAttempts = attempts.filter((time) => now - time < 60 * 1000); // last 60s
+    const recentAttempts = attempts.filter((t) => now - t < 60 * 1000);
 
     if (recentAttempts.length >= 4) {
-      return res.status(429).json({ message: "Too many attempts. Please try again after 60 seconds." });
+      return res.status(429).json({
+        message: "Too many login attempts. Try again after 60 seconds.",
+      });
     }
 
     loginAttempts[clientIP] = [...recentAttempts, now];
 
-    // Find user
-    const user = await User.findOne({ email });
+    // 🔹 Find user WITH password
+    const user = await User.findOne({ email }).select("+password");
+
     if (!user) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({
+        message: "Invalid credentials",
+      });
     }
 
+    // 🔹 Compare password
     const isMatch = await bcrypt.compare(password, user.password);
+
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({
+        message: "Invalid credentials",
+      });
     }
 
-    // Add IP to history
+    // 🔹 Track IP history
     user.ipAddress.unshift({
       latestIP: clientIP,
-      oldIP: user.ipAddress[0]?.latestIP || '',
+      oldIP: user.ipAddress[0]?.latestIP || "",
       loginDate: new Date(),
     });
 
-    // Update lastLogin
+    // 🔹 Update last login
     user.lastLogin = new Date();
 
     await user.save();
 
-    // ✅ Generate token instead of using cookie
-    const token = jwt.sign({ userId: user._id }, process.env.SECRET_TOKEN_KEY, {
-      expiresIn: '7d',
-    });
+    // 🔹 Generate JWT
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.SECRET_TOKEN_KEY,
+      { expiresIn: "7d" }
+    );
 
     return res.status(200).json({
       message: "Login successful",
       userId: user._id,
       role: user.role,
-      token, // ← frontend will store this
+      company : user.company,
+      token,
     });
-
   } catch (error) {
     console.error("Login error:", error);
-    return res.status(500).json({ message: "Internal server error" });
+    return res.status(500).json({
+      message: "Internal server error",
+    });
   }
 };
-
 
 
 export const Profile = async (req, res) => {
@@ -942,4 +998,189 @@ export const resetPassword = async (req, res) => {
   }
 };
 
+export const CreateCompany = async (req, res) => {
+  try {
+    const { userId } = req.params;
 
+    // ✅ Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const { companyName, description } = req.body;
+
+    // ✅ Validate required fields
+    if (!companyName || !description) {
+      return res.status(400).json({
+        message: "Company name and description are required",
+      });
+    }
+
+    // 🚫 Prevent duplicate company profile
+    const existingCompany = await CompanyList.findOne({ userId });
+    if (existingCompany) {
+      return res.status(400).json({
+        message: "Company profile already exists",
+      });
+    }
+
+    // ✅ Upload Images (if provided)
+    let uploadedImages = [];
+
+    if (req.files?.companyImage) {
+      const files = Array.isArray(req.files.companyImage)
+        ? req.files.companyImage
+        : [req.files.companyImage];
+
+      for (const file of files) {
+        const result = await cloudinary.uploader.upload(
+          file.tempFilePath,
+          { folder: "companies" }
+        );
+
+        uploadedImages.push({
+          public_id: result.public_id,
+          url: result.secure_url,
+        });
+      }
+    }
+
+    // ✅ Create Company
+    const company = await CompanyList.create({
+      userId,
+      companyName,
+      description,
+      companyImage: uploadedImages,
+    });
+
+    // ✅ (Optional) Update user role if your system supports company role
+    user.company = true;
+    await user.save();
+
+    return res.status(201).json({
+      message: "Company created successfully",
+      company,
+    });
+
+  } catch (error) {
+    console.error("❌ CreateCompany error:", error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+};
+
+export const UpdateCompany = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const { companyName, description } = req.body;
+
+    const company = await CompanyList.findById(companyId);
+
+    if (!company) {
+      return res.status(404).json({ message: "Company not found" });
+    }
+
+    // ✅ Check if at least one field is provided
+    const hasImages =
+      req.files?.companyImage &&
+      (Array.isArray(req.files.companyImage)
+        ? req.files.companyImage.length > 0
+        : true);
+
+    if (!companyName && !description && !hasImages) {
+      return res.status(400).json({
+        message:
+          "At least one of companyName, description, or companyImage is required",
+      });
+    }
+
+    // ✅ Update fields if provided
+    if (companyName) company.companyName = companyName;
+    if (description) company.description = description;
+
+    // ✅ Upload new images if provided
+    if (hasImages) {
+      const files = Array.isArray(req.files.companyImage)
+        ? req.files.companyImage
+        : [req.files.companyImage];
+
+      for (const file of files) {
+        const result = await cloudinary.uploader.upload(
+          file.tempFilePath,
+          { folder: "companies" }
+        );
+
+        company.companyImage.push({
+          public_id: result.public_id,
+          url: result.secure_url,
+        });
+      }
+    }
+
+    await company.save();
+
+    return res.status(200).json({
+      message: "Company updated successfully",
+      company,
+    });
+
+  } catch (error) {
+    console.error("❌ UpdateCompany error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const DeleteCompany = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+
+    const company = await CompanyList.findById(companyId);
+
+    if (!company) {
+      return res.status(404).json({ message: "Company not found" });
+    }
+
+    // Delete images from Cloudinary
+    for (const image of company.companyImage) {
+      await cloudinary.uploader.destroy(image.public_id);
+    }
+
+    // Delete company from DB
+    await CompanyList.findByIdAndDelete(companyId);
+
+    // Optional: reset user flag
+    const user = await User.findById(company.userId);
+    if (user) {
+      user.company = false;
+      await user.save();
+    }
+
+    return res.status(200).json({
+      message: "Company deleted successfully",
+    });
+
+  } catch (error) {
+    console.error("❌ DeleteCompany error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const GetMyCompany = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const company = await CompanyList.findOne({ userId });
+
+    if (!company) {
+      return res.status(404).json({ message: "Company not found" });
+    }
+
+    return res.status(200).json(company);
+
+  } catch (error) {
+    console.error("❌ GetMyCompany error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};

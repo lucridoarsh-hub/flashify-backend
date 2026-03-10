@@ -1,58 +1,84 @@
 import mongoose, { Schema } from "mongoose";
 import validator from "validator";
 
-const AuthSchema = new Schema(
+const UserSchema = new Schema(
   {
     username: {
       type: String,
-      required: [true, "Username is required"],
+      required: true,
       trim: true,
-      minlength: [3, "Username must be at least 3 characters"],
-      maxlength: [30, "Username must be less than 30 characters"],
+      minlength: 3,
+      maxlength: 30,
     },
 
-    teamMemberEmails:[{
-      type : String
-    }],
-    image:{
-      type : String
+    phoneNumber: {
+      type: String,
+      required: true,
+      trim: true,
+      validate: {
+        validator: function (v) {
+          return /^\+\d{8,15}$/.test(v); // +91XXXXXXXXXX, +1XXXXXXXXXX
+        },
+        message: "Phone number must include country code",
+      },
     },
-    otp:{
-      type : Number,
+
+    affiliateCode: {
+      type: String, // optional
+      trim: true,
     },
+
+    teamMemberEmails: [
+      {
+        type: String,
+        lowercase: true,
+        trim: true,
+        validate: [validator.isEmail, "Invalid email address"],
+      },
+    ],
+
+    image: {
+      type: String,
+    },
+
+    otp: {
+      type: Number,
+    },
+
     otpExpires: {
-  type: Date,
-  index: { expires: '5m' }, // auto-deletes after 5 minutes
-},
-
-    resetPassword:{
-      type : Boolean,
-      default :false
+      type: Date,
     },
+
+    resetPassword: {
+      type: Boolean,
+      default: false,
+    },
+
     email: {
       type: String,
-      required: [true, "Email is required"],
+      required: true,
       unique: true,
       lowercase: true,
       trim: true,
-      validate: {
-        validator: validator.isEmail,
-        message: "Please enter a valid email address",
-      },
+      validate: [validator.isEmail, "Invalid email address"],
     },
-    pdfLists:[{
-      public_id : {
-        type : String,
+
+    pdfLists: [
+      {
+        public_id: {
+          type: String,
+        },
+        url: {
+          type: String,
+        },
       },
-      url:{
-        type : String
-      },
-    }],
+    ],
 
     password: {
       type: String,
-      required: [true, "Password is required"],
-      minlength: [6, "Password must be at least 6 characters"],
+      required: true,
+      minlength: 6,
+      select: false, // extra security
     },
 
     ipAddress: [
@@ -85,7 +111,7 @@ const AuthSchema = new Schema(
 
     role: {
       type: String,
-      enum: ["user", "admin", "supplier", "freelancer","teammate"],
+      enum: ["user", "admin", "supplier", "freelancer", "teammate"],
       default: "user",
     },
 
@@ -98,14 +124,18 @@ const AuthSchema = new Schema(
       type: Date,
     },
 
-    ContractOrderList: [
+    company:{
+      type : Boolean,
+      default :  false
+    },
+
+    contractOrderList: [
       {
-        type: String, // or ObjectId if referencing a Contract model
-        // ref: "Contract" // Uncomment this if you're referencing contracts
+        type: String, // or ObjectId later
       },
     ],
   },
   { timestamps: true }
 );
 
-export const User = mongoose.model("User", AuthSchema);
+export const User = mongoose.models.User || mongoose.model("User", UserSchema);

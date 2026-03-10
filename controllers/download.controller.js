@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import { User } from '../models/auth.model.js';
 import { UserPdf } from '../models/userpdf.model.js';
+import { CompanyList } from '../models/company.model.js';
 dotenv.config();
 
 // Cloudinary config
@@ -30,7 +31,7 @@ try {
   throw new Error(`Failed to create uploads directory: ${err.message}`);
 }
 
-// Path to company logo
+// Path to company logo (fallback)
 const logoPath = path.join(__dirname, 'assets', 'company.png');
 
 // Professional color scheme
@@ -46,6 +47,9 @@ const COLORS = {
   success: '#16a34a',
   warning: '#d97706',
   shadow: '#0000001a',
+  commitBg: '#00FF00',        // Green for commits
+  commitText: '#000000',      // Black text on green
+  oppositeLines: '#FF0000',   // Red for opposite lines
 };
 
 // Font settings
@@ -70,6 +74,7 @@ const LABEL_PADDING = 12;
 const SHADOW_OFFSET = 2;
 const SCALE_BAR_LENGTH = 100;
 const FOLD_LABEL_DISTANCE = 60; // Fixed 20mm distance for fold labels
+const OPPOSITE_LINES_LENGTH = 150; // Shadow projection length (matches frontend)
 
 // Helper function to validate points
 const validatePoints = (points) => {
@@ -85,8 +90,8 @@ const validatePoints = (points) => {
   );
 };
 
-// Helper function to calculate bounds for a path
-const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPositions = {}) => {
+// Helper function to calculate bounds for a path (including commits and opposite lines)
+const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPositions = {}, commits = [], showOppositeLines = false, oppositeLinesDirection = 'far') => {
   if (!validatePoints(path.points)) {
     console.warn('Invalid points array in path:', path);
     return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
@@ -146,6 +151,41 @@ const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPo
     minY = Math.min(minY, labelY - 30);
     maxY = Math.max(maxY, labelY + ARROW_SIZE + 30);
   });
+
+  // Process commit positions
+  commits.forEach(commit => {
+    if (commit.position) {
+      const cx = parseFloat(commit.position.x);
+      const cy = parseFloat(commit.position.y);
+      // Commit label dimensions (approx)
+      const labelWidth = 90;
+      const labelHeight = 36;
+      minX = Math.min(minX, cx - labelWidth/2 - 10);
+      maxX = Math.max(maxX, cx + labelWidth/2 + 10);
+      minY = Math.min(minY, cy - labelHeight/2 - 10);
+      maxY = Math.max(maxY, cy + labelHeight/2 + 10);
+    }
+  });
+
+  // Process opposite lines if enabled
+  if (showOppositeLines && path.points.length > 1) {
+    // Determine angle based on direction
+    let angle = oppositeLinesDirection === 'far' ? 135 : 315;
+    const angleRad = angle * Math.PI / 180;
+    const dx = Math.cos(angleRad);
+    const dy = Math.sin(angleRad);
+
+    path.points.forEach(point => {
+      const x = parseFloat(point.x);
+      const y = parseFloat(point.y);
+      const projX = x + dx * OPPOSITE_LINES_LENGTH;
+      const projY = y + dy * OPPOSITE_LINES_LENGTH;
+      minX = Math.min(minX, x, projX);
+      maxX = Math.max(maxX, x, projX);
+      minY = Math.min(minY, y, projY);
+      maxY = Math.max(maxY, y, projY);
+    });
+  }
 
   // Process border
   if (showBorder && path.points.length > 1) {
@@ -317,6 +357,7 @@ const calculateGirth = (path) => {
   if (Array.isArray(path.segments)) {
     path.segments.forEach(segment => {
       const lengthStr = segment.length || '0 m';
+      // Extract numeric value and handle different unit formats
       const lengthNum = parseFloat(lengthStr.replace(/[^0-9.]/g, '')) || 0;
       totalLength += lengthNum;
     });
@@ -330,8 +371,18 @@ const formatQxL = (quantitiesAndLengths) => {
   return quantitiesAndLengths.map(item => `${item.quantity} x ${parseFloat(item.length).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`).join('   ');
 };
 
-// Generate SVG string with proper fold label positions
-const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirection, labelPositions = {}) => {
+// Helper function to convert length to mm display
+const convertMtoMM = (lengthStr) => {
+  if (!lengthStr) return '';
+  // Extract numeric part (ignores any trailing units)
+  const num = parseFloat(lengthStr);
+  if (isNaN(num)) return lengthStr; // fallback if parsing fails
+  // Format to two decimals and append 'mm'
+  return num.toFixed(2) + 'mm';
+};
+
+// Generate SVG string with proper fold label positions, commits, and opposite lines
+const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirection, labelPositions = {}, commits = [], showOppositeLines = false, oppositeLinesDirection = 'far') => {
   if (!validatePoints(path.points)) {
     console.warn('Skipping SVG generation for path due to invalid points:', path);
     return '<svg width="100%" height="100%" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><text x="50" y="50" font-size="14" text-anchor="middle" fill="#000000">Invalid path data</text></svg>';
@@ -413,6 +464,24 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
     svgContent += `<path d="M${d}" stroke="#000000" stroke-width="${2.5 * scaleFactor}" fill="none"/>`;
   }
 
+  // Generate opposite lines if enabled
+  if (showOppositeLines && path.points.length > 0) {
+    let angle = oppositeLinesDirection === 'far' ? 135 : 315;
+    const angleRad = angle * Math.PI / 180;
+    const dx = Math.cos(angleRad);
+    const dy = Math.sin(angleRad);
+    
+    path.points.forEach((point) => {
+      const x = parseFloat(point.x);
+      const y = parseFloat(point.y);
+      const projX = x + dx * OPPOSITE_LINES_LENGTH;
+      const projY = y + dy * OPPOSITE_LINES_LENGTH;
+      const {x: x1, y: y1} = transformCoord(x, y);
+      const {x: x2, y: y2} = transformCoord(projX, projY);
+      svgContent += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${COLORS.oppositeLines}" stroke-width="${3.5 * scaleFactor}" stroke-opacity="0.5"/>`;
+    });
+  }
+
   // Generate offset segments for border
   if (showBorder && path.points.length > 1) {
     const offsetSegments = calculateOffsetSegments(path, borderOffsetDirection);
@@ -484,8 +553,11 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
     const absLabelDx = Math.abs(labelDx);
     const absLabelDy = Math.abs(labelDy);
 
+    // Convert to mm display
+    const lengthDisplay = convertMtoMM(segment.length || '');
+    const textContent = lengthDisplay;
+    
     // Dynamic label width
-    const textContent = segment.length || '';
     const approxTextWidth = textContent.length * (fontSize * 0.6);
     labelWidth = Math.max(90, approxTextWidth + 20);
 
@@ -624,7 +696,7 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
 
           if (foldLabelPos) {
             const {x: foldLabelX, y: foldLabelY} = transformCoord(foldLabelPos.x, foldLabelPos.y);
-            const foldLabelText = foldType === 'Crush' ? `${foldType.toUpperCase()} ${tailLengthVal}` : foldType.toUpperCase();
+            const foldLabelText = foldType === 'Crush' ? `${foldType.toUpperCase()} ${tailLengthVal}mm` : foldType.toUpperCase();
             const foldLabelWidth = Math.max(90, foldLabelText.length * (fontSize * 0.6) + 20);
             
             // Calculate tail for fold label - always point to the base point
@@ -694,7 +766,7 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
         <path d="${tailPath}" fill="${tailFill}"/>
         <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="${FONTS.body}" font-weight="bold"
               fill="${labelTextColor}" text-anchor="middle" alignment-baseline="middle">
-          ${segment.length}
+          ${textContent}
         </text>
       </g>
       ${foldElement}
@@ -766,6 +838,29 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
     `;
   }).join('');
 
+  // Generate commit labels
+  commits.forEach((commit, index) => {
+    if (commit.position) {
+      const {x: posX, y: posY} = transformCoord(commit.position.x, commit.position.y);
+      const commitMessage = commit.message || 'Commit';
+      const commitWidth = Math.max(90, commitMessage.length * (fontSize * 0.6) + 20);
+      
+      // No tail for commit labels (they float freely)
+      svgContent += `
+        <g filter="url(#dropShadow)">
+          <rect x="${posX - commitWidth/2}" y="${posY - labelHeight/2}"
+                width="${commitWidth}" height="${labelHeight}"
+                fill="${COLORS.commitBg}" rx="${labelRadius}"
+                stroke="#000000" stroke-width="0.5"/>
+          <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="${FONTS.body}" font-weight="bold"
+                fill="${COLORS.commitText}" text-anchor="middle" alignment-baseline="middle">
+            ${commitMessage}
+          </text>
+        </g>
+      `;
+    }
+  });
+
   return `<svg width="100%" height="100%" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">
     ${svgDefs}
     <g>${gridLines}</g>
@@ -773,33 +868,56 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
   </svg>`;
 };
 
-// Helper function to draw header
-const drawHeader = (doc, pageWidth, y) => {
+// ========== MODIFIED drawHeader to accept headerInfo and optional logoBuffer ==========
+const drawHeader = (doc, pageWidth, y, headerInfo = null, logoBuffer = null) => {
   const margin = 50;
+
+  // Default header info
+  const defaultInfo = {
+    name: 'COMMERCIAL ROOFERS PTY LTD',
+    contact: 'info@commercialroofers.net.au | 0421259430',
+    tagline: 'Professional Roofing Solutions'
+  };
+
+  const info = headerInfo || defaultInfo;
+
   doc.rect(0, 0, pageWidth, 80)
      .fill('#FFFFFF');
 
   doc.font(FONTS.title)
      .fontSize(18)
      .fillColor(COLORS.darkText)
-     .text('COMMERCIAL ROOFERS PTY LTD', margin, 15);
+     .text(info.name, margin, 15);
+
   doc.font(FONTS.body)
      .fontSize(11)
      .fillColor(COLORS.darkText)
-     .text('info@commercialroofers.net.au | 0421259430', margin, 40);
+     .text(info.contact, margin, 40);
+
   doc.font(FONTS.italic)
      .fontSize(10)
      .fillColor(COLORS.darkText)
-     .text('Professional Roofing Solutions', margin, 55);
+     .text(info.tagline, margin, 55);
 
   try {
-    const logo = doc.openImage(logoPath);
-    const logoHeight = 50;
-    const logoWidth = (logo.width * logoHeight) / logo.height;
-    doc.image(logo, pageWidth - margin - logoWidth, 15, {
-      width: logoWidth,
-      height: logoHeight
-    });
+    if (logoBuffer) {
+      // Use provided buffer (company image)
+      const logoHeight = 50;
+      const logoWidth = (doc.openImage(logoBuffer).width * logoHeight) / doc.openImage(logoBuffer).height;
+      doc.image(logoBuffer, pageWidth - margin - logoWidth, 15, {
+        width: logoWidth,
+        height: logoHeight
+      });
+    } else {
+      // Fallback to local file
+      const logo = doc.openImage(logoPath);
+      const logoHeight = 50;
+      const logoWidth = (logo.width * logoHeight) / logo.height;
+      doc.image(logo, pageWidth - margin - logoWidth, 15, {
+        width: logoWidth,
+        height: logoHeight
+      });
+    }
   } catch (err) {
     console.warn('Failed to load logo:', err.message);
   }
@@ -888,7 +1006,9 @@ const drawInstructions = (doc, y) => {
     'Arrow points to the (solid) coloured side',
     '90° and 45° degrees are not labelled',
     'F = Total number of folds, each crush counts as 2 folds',
-    'End fold labels are positioned 20mm away from the diagram for better visibility'
+    'End fold labels are positioned 20mm away from the diagram for better visibility',
+    'Green labels are commit points (annotations)',
+    'Red lines are reference lines (opposite lines)'
   ];
 
   instructions.forEach((instruction, index) => {
@@ -944,7 +1064,7 @@ const drawDiagramPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex) => {
   const headers = ['', 'Colour/Material', 'CODE', 'F', 'GIRTH'];
 
   const totalFolds = calculateTotalFolds(pathData).toString();
-  const girth = calculateGirth(pathData);
+  const girth = `${calculateGirth(pathData)}mm`; // Add mm suffix
   const color = pathData.color || 'Shale Grey';
   const code = (pathData.code || '').replace(/\D/g, '');
   const num = (pathIndex + 1).toString();
@@ -1080,7 +1200,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y) => {
       path.color || 'N/A',
       code,
       totalFolds.toString(),
-      `${girth}mm`,
+      `${girth}mm`, // Add mm suffix
       qxL || 'N/A'
     ];
 
@@ -1120,7 +1240,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y) => {
 
     if (y + minRowHeight > pageHeight - 80) {
       doc.addPage();
-      const newPageY = drawHeader(doc, pageWidth, 0);
+      const newPageY = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer); // headerInfo and logoBuffer are passed from outer scope
       y = drawSectionHeader(doc, 'ORDER SUMMARY (CONTINUED)', newPageY);
       doc.rect(margin, y, pageWidth - 2 * margin, headerHeight)
          .fill(COLORS.tableHeader);
@@ -1139,7 +1259,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y) => {
 
   if (y + minRowHeight > pageHeight - 80) {
     doc.addPage();
-    const newPageY = drawHeader(doc, pageWidth, 0);
+    const newPageY = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
     y = drawSectionHeader(doc, 'ORDER SUMMARY (CONTINUED)', newPageY);
     doc.rect(margin, y, pageWidth - 2 * margin, headerHeight)
        .fill(COLORS.tableHeader);
@@ -1157,7 +1277,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y) => {
 
   // Totals row
   doc.font(FONTS.tableHeader).fontSize(11);
-  const totalsRow = ['', 'Totals', '', totalF.toString(), `${totalG.toFixed(2)}mm`, ''];
+  const totalsRow = ['', 'Totals', '', totalF.toString(), `${totalG.toFixed(2)}mm`, '']; // Add mm suffix
   let totalsMaxHeight = 0;
   totalsRow.forEach((val, i) => {
     const h = doc.heightOfString(val, { width: colWidths[i] - 10, align: 'center' });
@@ -1183,6 +1303,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y) => {
 export const generatePdfDownload = async (req, res) => {
   try {
     const { selectedProjectData, JobReference, Number, OrderContact, OrderDate, DeliveryAddress, PickupNotes, Notes, AdditionalItems } = req.body;
+console.dir(selectedProjectData, { depth: null });
     const { userId } = req.params;
 
     // Validate inputs
@@ -1214,6 +1335,53 @@ export const generatePdfDownload = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    // Prepare header info and logo
+    let logoBuffer = null;
+    let headerInfo = null;
+
+    if (user.company) {
+      try {
+        const company = await CompanyList.findOne({ userId: user._id });
+        if (company) {
+          // Use company logo if available
+          if (company.companyImage && company.companyImage.length > 0) {
+            const imageUrl = company.companyImage[0].url;
+            const response = await fetch(imageUrl);
+            if (response.ok) {
+              const arrayBuffer = await response.arrayBuffer();
+              logoBuffer = Buffer.from(arrayBuffer);
+              console.log('Fetched company logo for user:', userId);
+            } else {
+              console.warn(`Failed to fetch company image, status: ${response.status}`);
+            }
+          }
+
+          // Build header info using company name and user email
+          const contactEmail = user.email || 'info@commercialroofers.net.au';
+          const phone = company.phone ? ` | ${company.phone}` : '';
+          headerInfo = {
+            name: company.companyName || 'COMMERCIAL ROOFERS PTY LTD',
+            contact: contactEmail + phone,
+            tagline: 'Professional Roofing Solutions' // Could be customized later
+          };
+        } else {
+          // Company flag true but no record found – fallback to default
+          console.warn('Company flag true but no company record found for user:', userId);
+        }
+      } catch (err) {
+        console.warn('Error fetching company details:', err.message);
+      }
+    }
+
+    // If no headerInfo built, use default
+    if (!headerInfo) {
+      headerInfo = {
+        name: 'COMMERCIAL ROOFERS PTY LTD',
+        contact: 'info@commercialroofers.net.au | 0421259430',
+        tagline: 'Professional Roofing Solutions'
+      };
+    }
+
     // Validate project data
     let projectData;
     try {
@@ -1230,6 +1398,9 @@ export const generatePdfDownload = async (req, res) => {
     const showBorder = projectData.showBorder || false;
     const borderOffsetDirection = projectData.borderOffsetDirection || 'inside';
     const labelPositions = projectData.labelPositions || {};
+    const showOppositeLines = projectData.showOppositeLines || false;          // <-- NEW
+    const oppositeLinesDirection = projectData.oppositeLinesDirection || 'far'; // <-- NEW
+    const commits = projectData.commits || [];                                  // <-- NEW
 
     // Initialize groupedQuantitiesAndLengths early
     const validPaths = projectData.paths.filter(path => validatePoints(path.points));
@@ -1277,10 +1448,15 @@ export const generatePdfDownload = async (req, res) => {
     const pageWidth = doc.page.width;
     const pageHeight = doc.page.height;
 
-    let y = drawHeader(doc, pageWidth, 0);
+    // Draw header with headerInfo and logoBuffer
+    let y = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
 
     // Order Details Table
-    y = drawOrderDetailsTable(doc, JobReference, Number, OrderContact, OrderDate,
+    // Use user's username and phoneNumber for PO Number and Order Contact
+    const poNumber = user.username || Number;          // fallback to request Number if username missing
+    const orderContact = user.phoneNumber || OrderContact; // fallback to request OrderContact if phone missing
+
+    y = drawOrderDetailsTable(doc, JobReference, poNumber, orderContact, OrderDate,
                              DeliveryAddress || PickupNotes, y);
 
     // Instructions Section
@@ -1308,13 +1484,13 @@ export const generatePdfDownload = async (req, res) => {
       for (let i = 0; i < firstPagePaths; i++) {
         const row = Math.floor(i / pathsPerRow);
         const col = i % pathsPerRow;
-        const x = startX + col * (imgSize + gap);
+        const x = margin + col * (imgSize + gap);
         const yPos = startY + row * (imgSize + tableHeightApprox);
 
         try {
           const pathData = validPaths[i];
-          const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions);
-          const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions);
+          const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
+          const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
 
           // Convert SVG to PNG
           const imageBuffer = await sharp(Buffer.from(svgString))
@@ -1371,7 +1547,8 @@ export const generatePdfDownload = async (req, res) => {
     if (remainingPathsCount > 0) {
       for (let pageIndex = 0; pageIndex < remainingPagesNeeded; pageIndex++) {
         doc.addPage();
-        y = drawHeader(doc, pageWidth, 0);
+        // Draw header with headerInfo and logoBuffer
+        y = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
         y = drawSectionHeader(doc, `FLASHING DETAILS - PART ${imagePart++} OF ${imagePageCount}`, y);
 
         const startPath = firstPagePaths + pageIndex * remainingPathsPerPage;
@@ -1390,8 +1567,8 @@ export const generatePdfDownload = async (req, res) => {
 
           try {
             const pathData = validPaths[i];
-            const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions);
-            const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions);
+            const bounds = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
+            const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
 
             // Convert SVG to PNG
             const imageBuffer = await sharp(Buffer.from(svgString))
@@ -1458,7 +1635,8 @@ export const generatePdfDownload = async (req, res) => {
       doc.addPage();
       addedNewPageForSummary = true;
     }
-    y = addedNewPageForSummary ? drawHeader(doc, pageWidth, 0) : y;
+    // Draw header with headerInfo and logoBuffer for summary page
+    y = addedNewPageForSummary ? drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer) : y;
     y = drawSummaryTable(doc, validPaths, groupedQuantitiesAndLengths, y);
 
     // Draw footer on all pages

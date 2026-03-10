@@ -42,6 +42,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+server.listen(2224, "0.0.0.0", () => {
+  console.log("Server running at http://0.0.0.0:2224");
 });
