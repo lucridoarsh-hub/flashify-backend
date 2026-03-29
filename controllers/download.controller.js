@@ -1453,8 +1453,8 @@ console.dir(selectedProjectData, { depth: null });
 
     // Order Details Table
     // Use user's username and phoneNumber for PO Number and Order Contact
-    const poNumber = user.username || Number;          // fallback to request Number if username missing
-    const orderContact = user.phoneNumber || OrderContact; // fallback to request OrderContact if phone missing
+    const poNumber = user.phoneNumber || Number;          // fallback to request Number if username missing
+    const orderContact = user.username || OrderContact; // fallback to request OrderContact if phone missing
 
     y = drawOrderDetailsTable(doc, JobReference, poNumber, orderContact, OrderDate,
                              DeliveryAddress || PickupNotes, y);

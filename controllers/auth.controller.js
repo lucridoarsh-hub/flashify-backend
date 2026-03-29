@@ -123,14 +123,15 @@ export const updateUploadProjectPdf = async (req, res) => {
       body: req.body,
     });
 
-    const { userId,orderId } = req.params;
-
+    const { userId, orderId } = req.params;
     const { Name, Code, Color, data } = req.body;
 
     // Parse QuantitiesAndLengths from FormData fields
     const QuantitiesAndLengths = [];
     const bodyKeys = Object.keys(req.body);
-    const quantityKeys = bodyKeys.filter((key) => key.match(/^QuantitiesAndLengths\[\d+\]\[quantity\]$/));
+    const quantityKeys = bodyKeys.filter((key) =>
+      key.match(/^QuantitiesAndLengths\[\d+\]\[quantity\]$/)
+    );
     for (const quantityKey of quantityKeys) {
       const index = quantityKey.match(/\[(\d+)\]/)[1];
       const lengthKey = `QuantitiesAndLengths[${index}][length]`;
@@ -144,34 +145,46 @@ export const updateUploadProjectPdf = async (req, res) => {
 
     console.log('Parsed QuantitiesAndLengths:', QuantitiesAndLengths);
 
-    // Validate userId
+    // Validate userId and orderId
     if (!userId) {
       console.log('Validation failed: userId is required');
       return res.status(400).json({ message: 'userId is required' });
     }
+    if (!orderId) {
+      console.log('Validation failed: orderId is required');
+      return res.status(400).json({ message: 'orderId is required' });
+    }
 
-    // Validate body fields
+    // Validate required body fields
     const requiredFields = { Name, Code, Color, QuantitiesAndLengths };
-    const missingField = Object.entries(requiredFields).find(([key, value]) => !value);
+    const missingField = Object.entries(requiredFields).find(
+      ([key, value]) => !value
+    );
     if (missingField) {
       console.log(`Validation failed: ${missingField[0]} is required`);
-      return res.status(400).json({ message: `${missingField[0]} is required` });
+      return res
+        .status(400)
+        .json({ message: `${missingField[0]} is required` });
     }
 
     // Validate QuantitiesAndLengths array
     if (!Array.isArray(QuantitiesAndLengths) || QuantitiesAndLengths.length === 0) {
-      console.log('Validation failed: QuantitiesAndLengths must be a non-empty array');
-      return res.status(400).json({ message: 'QuantitiesAndLengths must be a non-empty array' });
+      console.log(
+        'Validation failed: QuantitiesAndLengths must be a non-empty array'
+      );
+      return res
+        .status(400)
+        .json({ message: 'QuantitiesAndLengths must be a non-empty array' });
     }
-    const findOrder = await ProjectOrder.findById(orderId)
-    if(!findOrder){
-      return res.status(400).json({message:"Order not found"})
-    }
+
     for (const item of QuantitiesAndLengths) {
       if (!item.quantity || !item.length) {
-        console.log('Validation failed: Each item in QuantitiesAndLengths must have quantity and length');
+        console.log(
+          'Validation failed: Each item in QuantitiesAndLengths must have quantity and length'
+        );
         return res.status(400).json({
-          message: 'Each item in QuantitiesAndLengths must have quantity and length',
+          message:
+            'Each item in QuantitiesAndLengths must have quantity and length',
         });
       }
     }
@@ -192,34 +205,167 @@ export const updateUploadProjectPdf = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Check if order exists
+    const findOrder = await ProjectOrder.findById(orderId);
+    if (!findOrder) {
+      console.log('Validation failed: Order not found for orderId:', orderId);
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
     // Save project to DB
-   // Save project to DB
-const savedProject = await ProjectData.create({
-  userId,
-  Name,
-  Code,
-  Color,
-  QuantitiesAndLengths,
-  data: parsedData,
-});
+    const savedProject = await ProjectData.create({
+      userId,
+      Name,
+      Code,
+      Color,
+      QuantitiesAndLengths,
+      data: parsedData,
+    });
 
-// Add project reference to order
-findOrder.ProjectIds.push(savedProject._id);
-await findOrder.save();
+    // Add project reference to order
+    findOrder.ProjectIds.push(savedProject._id);
+    await findOrder.save();
 
-console.log('Project saved and linked to order:', savedProject);
+    console.log('Project saved and linked to order:', savedProject);
 
-return res.status(201).json({
-  message: 'Project uploaded successfully',
-  project: savedProject,
-});
-
+    return res.status(201).json({
+      message: 'Project uploaded successfully',
+      project: savedProject,
+    });
   } catch (error) {
-    console.error('UploadProjectPdf error:', error);
+    console.error('updateUploadProjectPdf error:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
+export const updateUploadProject = async (req, res) => {
+  try {
+    console.log("Request received:", {
+      params: req.params,
+      body: req.body,
+    });
+
+    const { userId, projectId } = req.params;
+    const { Name, Code, Color, data } = req.body;
+
+    // ✅ Validate params
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    if (!projectId) {
+      return res.status(400).json({ message: "projectId is required" });
+    }
+
+    // ✅ Validate required fields
+    if (!Name || !Code || !Color) {
+      return res.status(400).json({
+        message: "Name, Code and Color are required",
+      });
+    }
+
+    // =========================================================
+    // ✅ HANDLE QuantitiesAndLengths (JSON + FormData support)
+    // =========================================================
+    let QuantitiesAndLengths = [];
+
+    // 👉 Case 1: JSON (your current request)
+    if (Array.isArray(req.body.QuantitiesAndLengths)) {
+      QuantitiesAndLengths = req.body.QuantitiesAndLengths;
+    }
+    // 👉 Case 2: FormData (fallback)
+    else {
+      const bodyKeys = Object.keys(req.body);
+
+      const quantityKeys = bodyKeys.filter((key) =>
+        key.match(/^QuantitiesAndLengths\[\d+\]\[quantity\]$/)
+      );
+
+      for (const quantityKey of quantityKeys) {
+        const index = quantityKey.match(/\[(\d+)\]/)[1];
+        const lengthKey = `QuantitiesAndLengths[${index}][length]`;
+
+        if (bodyKeys.includes(lengthKey)) {
+          QuantitiesAndLengths.push({
+            quantity: req.body[quantityKey],
+            length: req.body[lengthKey],
+          });
+        }
+      }
+    }
+
+    console.log("Final QuantitiesAndLengths:", QuantitiesAndLengths);
+
+    // ✅ Validate QuantitiesAndLengths
+    if (!Array.isArray(QuantitiesAndLengths) || QuantitiesAndLengths.length === 0) {
+      return res.status(400).json({
+        message: "QuantitiesAndLengths must be a non-empty array",
+      });
+    }
+
+    for (const item of QuantitiesAndLengths) {
+      if (!item.quantity || !item.length) {
+        return res.status(400).json({
+          message:
+            "Each item in QuantitiesAndLengths must have quantity and length",
+        });
+      }
+    }
+
+    // =========================================================
+    // ✅ Parse data safely
+    // =========================================================
+    let parsedData;
+    try {
+      parsedData = typeof data === "string" ? JSON.parse(data) : data;
+    } catch (error) {
+      return res.status(400).json({ message: "Invalid data format" });
+    }
+
+    // =========================================================
+    // ✅ Check user exists
+    // =========================================================
+    const userExists = await User.exists({ _id: userId });
+    if (!userExists) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // =========================================================
+    // ✅ Find project
+    // =========================================================
+    const project = await ProjectData.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    // ✅ Ownership check (security)
+    if (project.userId.toString() !== userId) {
+      return res.status(403).json({ message: "Unauthorized access" });
+    }
+
+    // =========================================================
+    // ✅ UPDATE PROJECT
+    // =========================================================
+    project.Name = Name;
+    project.Code = Code;
+    project.Color = Color;
+    project.QuantitiesAndLengths = QuantitiesAndLengths;
+    project.data = parsedData;
+
+    const updatedProject = await project.save();
+
+    console.log("Project updated successfully");
+
+    return res.status(200).json({
+      message: "Project updated successfully",
+      project: updatedProject,
+    });
+
+  } catch (error) {
+    console.error("updateUploadProject error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
 export const UpdateProfile = async (req, res) => {
   try {
     // Extract token from header

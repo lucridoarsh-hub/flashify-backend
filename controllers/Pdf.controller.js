@@ -78,6 +78,14 @@ const SCALE_BAR_LENGTH = 100;
 const FOLD_LABEL_DISTANCE = 60; // Fixed 20mm distance for fold labels
 const OPPOSITE_LINES_LENGTH = 150; // Shadow projection length for opposite lines
 
+// ================== HELPER: Convert meters to mm for display ==================
+const convertMtoMM = (lengthStr) => {
+  if (!lengthStr) return '';
+  const num = parseFloat(lengthStr);
+  if (isNaN(num)) return lengthStr;
+  return num.toFixed(2) + 'mm';
+};
+
 // Helper function to validate points
 const validatePoints = (points) => {
   if (!Array.isArray(points) || points.length === 0) {
@@ -159,7 +167,6 @@ const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPo
     if (commit.position) {
       const cx = parseFloat(commit.position.x);
       const cy = parseFloat(commit.position.y);
-      // Commit label dimensions (approx)
       const labelWidth = 90;
       const labelHeight = 36;
       minX = Math.min(minX, cx - labelWidth/2 - 10);
@@ -171,7 +178,6 @@ const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPo
 
   // Process opposite lines if enabled
   if (showOppositeLines && path.points.length > 1) {
-    // Determine angle based on direction
     let angle = oppositeLinesDirection === 'far' ? 135 : 315;
     const angleRad = angle * Math.PI / 180;
     const dx = Math.cos(angleRad);
@@ -199,7 +205,6 @@ const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPo
       maxY = Math.max(maxY, seg.p1.y, seg.p2.y);
     });
     
-    // Process border arrow
     const segment = offsetSegments[0];
     if (segment) {
       const origP1 = path.points[0];
@@ -276,10 +281,8 @@ const calculateFoldLabelPosition = (segment, isFirstSegment, p1, p2, foldType, f
   const unitX = dx / length;
   const unitY = dy / length;
   
-  // Base point is the start of first segment or end of last segment
   const basePoint = isFirstSegment ? p1 : p2;
   
-  // Calculate base direction (away from the path)
   let baseDirX, baseDirY;
   if (isFirstSegment) {
     baseDirX = unitX;
@@ -289,30 +292,24 @@ const calculateFoldLabelPosition = (segment, isFirstSegment, p1, p2, foldType, f
     baseDirY = -unitY;
   }
 
-  // Calculate normal direction (perpendicular to the segment)
   let normalX = -baseDirY;
   let normalY = baseDirX;
   
-  // Adjust for flip if needed
   if (flipped) {
     normalX = -normalX;
     normalY = -normalY;
   }
 
-  // For different fold types, adjust the label position direction
   let labelDirX, labelDirY;
   
   if (foldType === 'Crush') {
-    // For crush folds, position label in the normal direction
     labelDirX = normalX;
     labelDirY = normalY;
   } else {
-    // For other folds, use the fold direction with some adjustment
     const foldAngleRad = (foldAngle * Math.PI) / 180;
     labelDirX = baseDirX * Math.cos(foldAngleRad) - baseDirY * Math.sin(foldAngleRad);
     labelDirY = baseDirX * Math.sin(foldAngleRad) + baseDirY * Math.cos(foldAngleRad);
     
-    // Make sure label is positioned away from the diagram
     const dotProduct = labelDirX * normalX + labelDirY * normalY;
     if (dotProduct < 0) {
       labelDirX = -labelDirX;
@@ -320,14 +317,12 @@ const calculateFoldLabelPosition = (segment, isFirstSegment, p1, p2, foldType, f
     }
   }
 
-  // Normalize the direction vector
   const dirLength = Math.sqrt(labelDirX * labelDirX + labelDirY * labelDirY);
   if (dirLength > 0) {
     labelDirX /= dirLength;
     labelDirY /= dirLength;
   }
 
-  // Position label at fixed 20mm distance
   const labelX = parseFloat(basePoint.x) + labelDirX * FOLD_LABEL_DISTANCE;
   const labelY = parseFloat(basePoint.y) + labelDirY * FOLD_LABEL_DISTANCE;
 
@@ -353,7 +348,7 @@ const calculateTotalFolds = (path) => {
   return totalFolds;
 };
 
-// Helper function to calculate girth
+// Helper function to calculate girth (returns mm as string without suffix)
 const calculateGirth = (path) => {
   let totalLength = 0;
   if (Array.isArray(path.segments)) {
@@ -363,7 +358,7 @@ const calculateGirth = (path) => {
       totalLength += lengthNum;
     });
   }
-  return totalLength.toFixed(2);
+  return (totalLength * 1000).toFixed(2);
 };
 
 // Helper function to format Q x L
@@ -417,7 +412,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
   const gridEndX = Math.ceil(bounds.maxX / GRID_SIZE) * GRID_SIZE;
   const gridEndY = Math.ceil(bounds.maxY / GRID_SIZE) * GRID_SIZE;
 
-  // Minor grid
   for (let x = gridStartX; x <= gridEndX; x += minorGridSize) {
     const {x: tx1, y: ty1} = transformCoord(x, gridStartY);
     const {x: tx2, y: ty2} = transformCoord(x, gridEndY);
@@ -428,8 +422,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
     const {x: tx2, y: ty2} = transformCoord(gridEndX, y);
     gridLines += `<line x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}" stroke="#e0e0e0" stroke-width="${0.3 * scaleFactor}"/>`;
   }
-
-  // Major grid
   for (let x = gridStartX; x <= gridEndX; x += GRID_SIZE) {
     const {x: tx1, y: ty1} = transformCoord(x, gridStartY);
     const {x: tx2, y: ty2} = transformCoord(x, gridEndY);
@@ -482,7 +474,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
       return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#000000" stroke-width="${3 * scaleFactor}" stroke-dasharray="${6 * scaleFactor},${4 * scaleFactor}"/>`;
     }).join('');
     
-    // Border arrow
     const segment = offsetSegments[0];
     if (segment) {
       const origP1 = path.points[0];
@@ -544,8 +535,8 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
     const absLabelDx = Math.abs(labelDx);
     const absLabelDy = Math.abs(labelDy);
 
-    // Dynamic label width
-    const textContent = segment.length || '';
+    // --- FIX: Convert segment length to mm ---
+    const textContent = convertMtoMM(segment.length);
     const approxTextWidth = textContent.length * (fontSize * 0.6);
     labelWidth = Math.max(90, approxTextWidth + 20);
 
@@ -597,7 +588,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
       foldType = segment.fold || 'None';
     }
 
-    // Generate fold element if exists
     if (foldType !== 'None') {
       const dx = parseFloat(p2.x) - parseFloat(p1.x);
       const dy = parseFloat(p2.y) - parseFloat(p1.y);
@@ -609,7 +599,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
         const isFirstSegment = i === 0;
         const isLastSegment = i === path.points.length - 2;
         
-        // Only process end folds (first or last segment)
         if (isFirstSegment || isLastSegment) {
           let modelFoldBaseX = isFirstSegment ? parseFloat(p1.x) : parseFloat(p2.x);
           let modelFoldBaseY = isFirstSegment ? parseFloat(p1.y) : parseFloat(p2.y);
@@ -667,7 +656,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
           
           foldElement = `<path d="${foldPath}" stroke="#000000" stroke-width="${2 * scaleFactor}" fill="none" filter="url(#dropShadow)"/>`;
 
-          // Calculate fold label position with fixed distance
           const calculatedFoldLabelPos = calculateFoldLabelPosition(
             segment, isFirstSegment, p1, p2, foldType, foldAngle, flipped
           );
@@ -675,7 +663,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
           let foldLabelPos;
           const foldLabelKey = `fold-${path.pathIndex}-${i}`;
           
-          // Use calculated position if available, otherwise fall back to provided position
           if (calculatedFoldLabelPos) {
             foldLabelPos = calculatedFoldLabelPos;
           } else {
@@ -684,10 +671,10 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
 
           if (foldLabelPos) {
             const {x: foldLabelX, y: foldLabelY} = transformCoord(foldLabelPos.x, foldLabelPos.y);
-            const foldLabelText = foldType === 'Crush' ? `${foldType.toUpperCase()} ${tailLengthVal}` : foldType.toUpperCase();
+            // --- FIX: Add 'mm' suffix for Crush folds ---
+            const foldLabelText = foldType === 'Crush' ? `${foldType.toUpperCase()} ${tailLengthVal}mm` : foldType.toUpperCase();
             const foldLabelWidth = Math.max(90, foldLabelText.length * (fontSize * 0.6) + 20);
             
-            // Calculate tail for fold label - always point to the base point
             let foldTailPath = '';
             const foldTargetX = modelFoldBaseX;
             const foldTargetY = modelFoldBaseY;
@@ -754,7 +741,7 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
         <path d="${tailPath}" fill="${tailFill}"/>
         <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="${FONTS.body}" font-weight="bold"
               fill="${labelTextColor}" text-anchor="middle" alignment-baseline="middle">
-          ${segment.length}
+          ${textContent}
         </text>
       </g>
       ${foldElement}
@@ -833,7 +820,6 @@ const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirectio
       const commitMessage = commit.message || 'Commit';
       const commitWidth = Math.max(90, commitMessage.length * (fontSize * 0.6) + 20);
       
-      // No tail for commit labels (they float freely)
       svgContent += `
         <g filter="url(#dropShadow)">
           <rect x="${posX - commitWidth/2}" y="${posY - labelHeight/2}"
@@ -961,7 +947,7 @@ const drawOrderDetailsTable = (doc, JobReference, Number, OrderContact, OrderDat
   return y + 25;
 };
 
-// Helper function to draw instructions (updated with commit and opposite lines)
+// Helper function to draw instructions
 const drawInstructions = (doc, y) => {
   const margin = 50;
   const pageWidth = doc.page.width;
@@ -1029,12 +1015,13 @@ const drawDiagramPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex) => {
   const headers = ['', 'Colour/Material', 'CODE', 'F', 'GIRTH'];
 
   const totalFolds = calculateTotalFolds(pathData).toString();
+  // --- FIX: Girth is already in mm, add 'mm' suffix ---
   const girth = calculateGirth(pathData);
   const color = pathData.color || 'Shale Grey';
   const code = (pathData.code || '').replace(/\D/g, '');
   const num = (pathIndex + 1).toString();
 
-  const row = [num, color, code, totalFolds, girth];
+  const row = [num, color, code, totalFolds, `${girth}mm`];
   const aligns = ['center', 'left', 'center', 'center', 'center'];
 
   let currentY = y;
@@ -1265,6 +1252,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y) => {
   return y + totalsRowHeight + 25;
 };
 
+// ================== MAIN GENERATE PDF FUNCTION ==================
 export const generatePdf = async (req, res) => {
   try {
     const { selectedProjectData, JobReference, Number, OrderContact, OrderDate, DeliveryAddress, PickupNotes, Notes, AdditionalItems, emails } = req.body;
@@ -1299,6 +1287,9 @@ export const generatePdf = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    const poNumber = user.phoneNumber || Number;
+    const orderContact = user.username || OrderContact;
+
     // Validate project data
     let projectData;
     try {
@@ -1315,7 +1306,6 @@ export const generatePdf = async (req, res) => {
     const showBorder = projectData.showBorder || false;
     const borderOffsetDirection = projectData.borderOffsetDirection || 'inside';
     const labelPositions = projectData.labelPositions || {};
-    // NEW: opposite lines and commits
     const showOppositeLines = projectData.showOppositeLines || false;
     const oppositeLinesDirection = projectData.oppositeLinesDirection || 'far';
     const commits = projectData.commits || [];
@@ -1369,8 +1359,8 @@ export const generatePdf = async (req, res) => {
     let y = drawHeader(doc, pageWidth, 0);
 
     // Order Details Table
-    y = drawOrderDetailsTable(doc, JobReference, Number, OrderContact, OrderDate,
-                             DeliveryAddress || PickupNotes, y);
+    y = drawOrderDetailsTable(doc, JobReference, poNumber, orderContact, OrderDate,
+                              DeliveryAddress || PickupNotes, y);
 
     // Instructions Section
     y = drawInstructions(doc, y);
@@ -1614,8 +1604,8 @@ export const generatePdf = async (req, res) => {
         <p>Thank you for your order with Commercial Roofers Pty Ltd. Please find the details of your flashing order below, along with the attached PDF for your records.</p>
         <table class="details-table">
           <tr><th>Job Reference</th><td>${JobReference}</td></tr>
-          <tr><th>PO Number</th><td>${Number}</td></tr>
-          <tr><th>Order Contact</th><td>${OrderContact}</td></tr>
+          <tr><th>PO Number</th><td>${poNumber}</td></tr>
+          <tr><th>Order Contact</th><td>${orderContact}</td></tr>
           <tr><th>Order Date</th><td>${OrderDate}</td></tr>
           ${DeliveryAddress ? `<tr><th>Delivery Address</th><td>${DeliveryAddress}</td></tr>` : ''}
           ${!DeliveryAddress && PickupNotes ? `<tr><th>Pickup Notes</th><td>${PickupNotes}</td></tr>` : ''}
