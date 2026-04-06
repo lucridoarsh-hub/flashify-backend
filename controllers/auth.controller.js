@@ -431,24 +431,29 @@ export const register = async (req, res) => {
       req.socket?.remoteAddress ||
       req.ip;
 
-    // 🔹 Required field validation
-    if (!username || !email || !password || !phoneNumber) {
+    // 🔹 Required field validation (phone removed)
+    if (!username || !email || !password) {
       return res.status(400).json({
-        message: "Username, email, password, and phone number are required",
+        message: "Username, email, and password are required",
       });
     }
 
-    // 🔹 Phone format validation (+XXXXXXXXXX)
+    // 🔹 Phone format validation (only if provided)
     const phoneRegex = /^\+\d{8,15}$/;
-    if (!phoneRegex.test(phoneNumber)) {
+    if (phoneNumber && !phoneRegex.test(phoneNumber)) {
       return res.status(400).json({
         message: "Phone number must include country code (e.g. +912345678901)",
       });
     }
 
     // 🔹 Check if user already exists
+    const query = [{ email }, { username }];
+    if (phoneNumber) {
+      query.push({ phoneNumber });
+    }
+
     const existingUser = await User.findOne({
-      $or: [{ email }, { username }, { phoneNumber }],
+      $or: query,
     });
 
     if (existingUser) {
@@ -464,7 +469,7 @@ export const register = async (req, res) => {
     const newUser = new User({
       username,
       email,
-      phoneNumber,
+      ...(phoneNumber && { phoneNumber }), // include only if provided
       affiliateCode: affiliateCode || undefined,
       teamMemberEmails: teamMemberEmails || [],
       password: hashedPassword,
@@ -488,7 +493,7 @@ export const register = async (req, res) => {
 
     await newUser.save();
 
-    // 🔹 Generate JWT (mobile-friendly)
+    // 🔹 Generate JWT
     const token = jwt.sign(
       { userId: newUser._id, role: newUser.role },
       process.env.SECRET_TOKEN_KEY,
@@ -498,7 +503,7 @@ export const register = async (req, res) => {
     return res.status(201).json({
       message: "User registered successfully",
       userId: newUser._id,
-      company :  newUser.company,
+      company: newUser.company,
       role: newUser.role,
       token,
     });
@@ -509,8 +514,6 @@ export const register = async (req, res) => {
     });
   }
 };
-
-
 
 
 const loginAttempts = {}; // in-memory (OK for now)
