@@ -13,14 +13,8 @@ const UserSchema = new Schema(
 
     phoneNumber: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
-      validate: {
-        validator: function (v) {
-          return /^\+\d{8,15}$/.test(v); // +91XXXXXXXXXX, +1XXXXXXXXXX
-        },
-        message: "Phone number must include country code",
-      },
     },
 
     affiliateCode: {
