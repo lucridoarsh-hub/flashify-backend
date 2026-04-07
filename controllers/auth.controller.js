@@ -624,7 +624,52 @@ export const Profile = async (req, res) => {
     return res.status(500).json({ message: "Internal server error" });
   }
 };
+export const deleteAccount = async (req, res) => {
+  try {
+    // 1. Extract token from Authorization header (Bearer <token>)
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No token provided' });
+    }
+    const token = authHeader.split(' ')[1];
 
+    // 2. Verify token
+    const decoded = jwt.verify(token, process.env.SECRET_TOKEN_KEY);
+    if (!decoded?.userId) {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+
+    // 3. Require password confirmation for security
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ message: 'Password confirmation required' });
+    }
+
+    // 4. Find user with password field (since it's hidden by default)
+    const user = await User.findById(decoded.userId).select('+password');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // 5. Verify password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid password' });
+    }
+
+    // 6. Delete the user
+    await User.findByIdAndDelete(decoded.userId);
+
+    // 7. Return success (no need to clear JWT client-side)
+    return res.status(200).json({ message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
 // export const sendEmail = async (req, res) => {
 //   try {
 //     const info = await transporter.sendMail({

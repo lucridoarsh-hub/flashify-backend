@@ -1,5 +1,5 @@
 import express from 'express'
-import { addTeamMemberEmail, CreateCompany, DeleteCompany, fetchSelectedProjectData, fetchTeamEmails, fetchUploadOrder, fetchUploadProjectData, forgetPassword, GetMyCompany, login,  Profile, register, resetPassword, resetPasswordOtpVerify, sendPdfToTeamFromEmail, UpdateCompany, UpdateJobOrder, UpdateProfile,  updateUploadProject,  updateUploadProjectPdf,  UploadProjectPdf } from '../controllers/auth.controller.js'
+import { addTeamMemberEmail, CreateCompany, deleteAccount, DeleteCompany, fetchSelectedProjectData, fetchTeamEmails, fetchUploadOrder, fetchUploadProjectData, forgetPassword, GetMyCompany, login,  Profile, register, resetPassword, resetPasswordOtpVerify, sendPdfToTeamFromEmail, UpdateCompany, UpdateJobOrder, UpdateProfile,  updateUploadProject,  updateUploadProjectPdf,  UploadProjectPdf } from '../controllers/auth.controller.js'
 import { CheckAuth } from '../middlewares/CheckAuth.js'
 import { AddSupplier, AddTeammate, EditSupplierDetails, fetchSupplierList, fetchTeammatesOrders, fetchTeammateTeams, fetchUserSupplier, fetchUserTeammate, SupplierDetails } from '../controllers/supplier.controller.js'
 import { EditFreelancerDetails, fetchFreelancerList, fetchOtherFreelancerDetails, fetchOtherUserDetails, FreelancerDetails } from '../controllers/freelancer.controller.js'
@@ -61,3 +61,4 @@ AuthRouter.post('/create-company/:userId',CreateCompany)
 AuthRouter.put('/update-company/:companyId',UpdateCompany)
 AuthRouter.delete('/delete-company/:companyId',DeleteCompany)
 AuthRouter.get('/fetch-company/:userId',GetMyCompany)
+AuthRouter.delete('/delete-account',deleteAccount)
