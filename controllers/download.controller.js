@@ -344,7 +344,8 @@ const calculateGirth = (path) => {
       totalLength += lengthNum;
     });
   }
-  return totalLength.toFixed(2);
+  // Round to nearest integer and return as string without decimal
+  return Math.round(totalLength).toString();
 };
 
 // Helper function to format Q x L
@@ -688,7 +689,7 @@ const chevronBaseDistance = 10 * offsetScale;
 
           if (foldLabelPos) {
             const {x: foldLabelX, y: foldLabelY} = transformCoord(foldLabelPos.x, foldLabelPos.y);
-            const foldLabelText  = foldType === 'Crush' ? `${foldType.toUpperCase()} ${tailLengthVal}mm` : foldType.toUpperCase();
+         const foldLabelText = foldType.toUpperCase();
             const foldLabelWidth = Math.max(80, foldLabelText.length * (fontSize * 0.6) + 20);
             
             let foldTailPath = '';
@@ -1075,9 +1076,12 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y, heade
     const pathQuantitiesAndLengths = groupedQuantitiesAndLengths[index] || [];
     const qxL        = formatQxL(pathQuantitiesAndLengths);
     const totalFolds = calculateTotalFolds(path);
-    const girth      = parseFloat(calculateGirth(path));
+    
+    // UPDATED GIRTH LOGIC (per-row)
+    const rawGirth   = parseFloat(calculateGirth(path));
+    const girth      = Math.round(rawGirth);           // ensure integer mm for display
     totalF += totalFolds;
-    totalG += girth;
+    totalG += rawGirth;                                // keep accumulation as float
 
     const code = (path.code || '').replace(/\D/g, '') || '';
     const row  = [
@@ -1085,7 +1089,7 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y, heade
       path.color || 'N/A',
       code,
       totalFolds.toString(),
-      `${girth}mm`,
+      `${girth}mm`,                                    // now always integer
       qxL || 'N/A'
     ];
 
@@ -1150,8 +1154,11 @@ const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y, heade
     y += headerHeight;
   }
 
+  // UPDATED TOTAL GIRTH (rounded integer)
+  const totalGirthInt = Math.round(totalG);
+
   doc.font(FONTS.tableHeader).fontSize(11);
-  const totalsRow = ['', 'Totals', '', totalF.toString(), `${totalG.toFixed(2)}mm`, ''];
+  const totalsRow = ['', 'Totals', '', totalF.toString(), `${totalGirthInt}mm`, ''];
   let totalsMaxHeight = 0;
   totalsRow.forEach((val, i) => {
     const h = doc.heightOfString(val, { width: colWidths[i] - 10, align: 'center' });
