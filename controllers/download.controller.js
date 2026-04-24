@@ -9,1451 +9,974 @@ import { fileURLToPath } from 'url';
 import { User } from '../models/auth.model.js';
 import { UserPdf } from '../models/userpdf.model.js';
 import { CompanyList } from '../models/company.model.js';
+
 dotenv.config();
 
-// Cloudinary config
+// ─── Cloudinary config ────────────────────────────────────────────────────────
 cloudinary.config({
   cloud_name: process.env.CLOUDNARY_NAME,
-  api_key: process.env.CLOUDNARY_API,
+  api_key:    process.env.CLOUDNARY_API,
   api_secret: process.env.CLOUDNARY_SECRET,
 });
 
-// Derive __dirname for ES modules
+// ─── __dirname shim for ES modules ───────────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Create uploads directory
+// ─── Uploads directory ────────────────────────────────────────────────────────
 const uploadsDir = path.join(__dirname, 'Uploads');
 try {
   await fsPromises.mkdir(uploadsDir, { recursive: true });
-  console.log('Uploads directory created or already exists:', uploadsDir);
 } catch (err) {
-  console.error('Failed to create uploads directory:', err.message);
   throw new Error(`Failed to create uploads directory: ${err.message}`);
 }
 
-// Path to company logo (fallback)
+// ─── Fallback logo ────────────────────────────────────────────────────────────
 const logoPath = path.join(__dirname, 'assets', 'company.png');
 
-// Professional color scheme
+// ─── Design tokens ────────────────────────────────────────────────────────────
 const COLORS = {
-  primary: '#0f172a',
-  secondary: '#2563eb',
-  accent: '#dc2626',
-  lightBg: '#f9fafb',
-  darkText: '#111827',
-  border: '#d1d5db',
-  tableHeader: '#e5e7eb',
-  tableRow: '#f9fafb',
-  success: '#16a34a',
-  warning: '#d97706',
-  shadow: '#0000001a',
-  commitBg: '#00FF00',
-  commitText: '#000000',
-  oppositeLines: '#FF0000',
+  primary:       '#0f172a',
+  secondary:     '#2563eb',
+  accent:        '#dc2626',
+  lightBg:       '#f8fafc',
+  darkText:      '#111827',
+  border:        '#d1d5db',
+  tableHeader:   '#e5e7eb',
+  tableRow:      '#f9fafb',
+  shadow:        '#00000018',
+  commitBg:      '#22c55e',
+  commitText:    '#000000',
+  oppLines:      '#363636',
+  diagramBg:     '#ffffff',
+  majorGrid:     '#e2e8f0',
+  minorGrid:     '#f1f5f9',
 };
 
-// Font settings
 const FONTS = {
-  title: 'Helvetica-Bold',
-  subtitle: 'Helvetica-Bold',
-  body: 'Helvetica',
+  title:       'Helvetica-Bold',
+  subtitle:    'Helvetica-Bold',
+  body:        'Helvetica',
   tableHeader: 'Helvetica-Bold',
-  tableBody: 'Helvetica',
-  italic: 'Helvetica-Oblique',
-  monospace: 'Courier',
+  tableBody:   'Helvetica',
+  italic:      'Helvetica-Oblique',
 };
 
-// Configuration constants
-const GRID_SIZE = 20;
-const FOLD_LENGTH = 14;
-const ARROW_SIZE = 12;
-const CHEVRON_SIZE = 10;
-const HOOK_RADIUS = 8;
-const ZIGZAG_SIZE = 9;
-const LABEL_PADDING = 12;
-const SHADOW_OFFSET = 2;
-const SCALE_BAR_LENGTH = 100;
+// ─── Diagram constants ────────────────────────────────────────────────────────
+const FOLD_LENGTH         = 14;
+const ARROW_SIZE          = 12;
 const FOLD_LABEL_DISTANCE = 60;
-const OPPOSITE_LINES_LENGTH = 150;
+const OPPOSITE_LINES_LEN  = 150;
 
-// Helper function to validate points
-const validatePoints = (points) => {
-  if (!Array.isArray(points) || points.length === 0) {
-    return false;
+// ─── Layout constants ─────────────────────────────────────────────────────────
+const PAGE_MARGIN  = 40;
+const COL_GUTTER   = 12;
+const COLS         = 2;
+
+const CELL_WIDTH   = Math.floor((595 - PAGE_MARGIN * 2 - COL_GUTTER * (COLS - 1)) / COLS);
+
+const PROP_TABLE_H  = 62;
+const IMG_H_FIRST   = 230;
+const IMG_H_OTHER   = 190;
+
+const SVG_PX        = CELL_WIDTH * 3;
+
+const ROW_STRIDE_FIRST = IMG_H_FIRST + PROP_TABLE_H + 10;
+const ROW_STRIDE_OTHER = IMG_H_OTHER + PROP_TABLE_H + 10;
+
+const PER_PAGE_FIRST = COLS * 1;  // 2
+const PER_PAGE_OTHER = COLS * 3;  // 6
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VALIDATION
+// ═════════════════════════════════════════════════════════════════════════════
+const validatePoints = (points) =>
+  Array.isArray(points) && points.length > 0 &&
+  points.every(p => p && !isNaN(parseFloat(p.x)) && !isNaN(parseFloat(p.y)));
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BOUNDS (tightened padding for larger diagram display)
+// ═════════════════════════════════════════════════════════════════════════════
+const calculateBounds = (
+  path, scale, showBorder, borderOffsetDirection,
+  labelPositions = {}, commits = [],
+  showOppositeLines = false, oppositeLinesDirection = 'far'
+) => {
+  if (!validatePoints(path.points)) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  path.points.forEach(p => {
+    const x = parseFloat(p.x), y = parseFloat(p.y);
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  });
+
+  (path.segments || []).forEach((seg, i) => {
+    if (!seg.labelPosition) return;
+    const lx = parseFloat(seg.labelPosition.x), ly = parseFloat(seg.labelPosition.y);
+    minX = Math.min(minX, lx - 60); maxX = Math.max(maxX, lx + 60);
+    minY = Math.min(minY, ly - 35); maxY = Math.max(maxY, ly + ARROW_SIZE + 35);
+
+    const foldKey = `fold-${path.pathIndex}-${i}`;
+    const fp = labelPositions[foldKey];
+    if (fp) {
+      const fx = parseFloat(fp.x), fy = parseFloat(fp.y);
+      minX = Math.min(minX, fx - 60); maxX = Math.max(maxX, fx + 60);
+      minY = Math.min(minY, fy - 35); maxY = Math.max(maxY, fy + ARROW_SIZE + 35);
+    }
+  });
+
+  (path.angles || []).forEach(angle => {
+    if (!angle.labelPosition) return;
+    const av = Math.round(parseFloat(angle.angle.replace(/°/g, '')));
+    if ([90, 270, 45, 315].includes(av)) return;
+    const lx = parseFloat(angle.labelPosition.x), ly = parseFloat(angle.labelPosition.y);
+    minX = Math.min(minX, lx - 60); maxX = Math.max(maxX, lx + 60);
+    minY = Math.min(minY, ly - 35); maxY = Math.max(maxY, ly + ARROW_SIZE + 35);
+  });
+
+  commits.forEach(c => {
+    if (!c.position) return;
+    const cx = parseFloat(c.position.x), cy = parseFloat(c.position.y);
+    minX = Math.min(minX, cx - 60); maxX = Math.max(maxX, cx + 60);
+    minY = Math.min(minY, cy - 30); maxY = Math.max(maxY, cy + 30);
+  });
+
+  // Only process opposite lines if enabled
+  if (showOppositeLines && path.points.length > 1) {
+    const angle    = oppositeLinesDirection === 'far' ? 135 : 315;
+    const angleRad = angle * Math.PI / 180;
+    const dx = Math.cos(angleRad), dy = Math.sin(angleRad);
+    path.points.forEach(p => {
+      const x = parseFloat(p.x), y = parseFloat(p.y);
+      minX = Math.min(minX, x, x + dx * OPPOSITE_LINES_LEN);
+      maxX = Math.max(maxX, x, x + dx * OPPOSITE_LINES_LEN);
+      minY = Math.min(minY, y, y + dy * OPPOSITE_LINES_LEN);
+      maxY = Math.max(maxY, y, y + dy * OPPOSITE_LINES_LEN);
+    });
   }
-  return points.every(point =>
-    point &&
-    typeof point.x !== 'undefined' &&
-    typeof point.y !== 'undefined' &&
-    !isNaN(parseFloat(point.x)) &&
-    !isNaN(parseFloat(point.y))
-  );
+
+  if (showBorder && path.points.length > 1) {
+    calcOffsetSegments(path, borderOffsetDirection).forEach(s => {
+      minX = Math.min(minX, s.p1.x, s.p2.x); maxX = Math.max(maxX, s.p1.x, s.p2.x);
+      minY = Math.min(minY, s.p1.y, s.p2.y); maxY = Math.max(maxY, s.p1.y, s.p2.y);
+    });
+  }
+
+  const span    = Math.max(maxX - minX, maxY - minY);
+  const padding = Math.max(40, span * 0.1);
+  return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
 };
 
-// Helper function to calculate bounds for a path
-const calculateBounds = (path, scale, showBorder, borderOffsetDirection, labelPositions = {}, commits = [], showOppositeLines = false, oppositeLinesDirection = 'far') => {
-  if (!validatePoints(path.points)) {
-    console.warn('Invalid points array in path:', path);
-    return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
-  }
-  
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  path.points.forEach((point) => {
-    const x = parseFloat(point.x);
-    const y = parseFloat(point.y);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  });
-
-  const isLargeDiagram = (maxX - minX > 10000 || maxY - minY > 10000);
-  
-  // Process segment labels
-  path.segments.forEach((segment, i) => {
-    if (!segment.labelPosition || typeof segment.labelPosition.x === 'undefined' || typeof segment.labelPosition.y === 'undefined') {
-      return;
-    }
-    const labelX = parseFloat(segment.labelPosition.x);
-    const labelY = parseFloat(segment.labelPosition.y);
-    minX = Math.min(minX, labelX - 50);
-    maxX = Math.max(maxX, labelX + 50);
-    minY = Math.min(minY, labelY - 30);
-    maxY = Math.max(maxY, labelY + ARROW_SIZE + 30);
-
-    const foldLabelKey = `fold-${path.pathIndex}-${i}`;
-    const foldLabelPos = labelPositions[foldLabelKey];
-    if (foldLabelPos) {
-      const foldLabelX = parseFloat(foldLabelPos.x);
-      const foldLabelY = parseFloat(foldLabelPos.y);
-      minX = Math.min(minX, foldLabelX - 50);
-      maxX = Math.max(maxX, foldLabelX + 50);
-      minY = Math.min(minY, foldLabelY - 30);
-      maxY = Math.max(maxY, foldLabelY + ARROW_SIZE + 30);
-    }
-  });
-
-  // Process angle labels
-  (path.angles || []).forEach((angle) => {
-    if (!angle.labelPosition || typeof angle.labelPosition.x === 'undefined' || typeof angle.labelPosition.y === 'undefined') {
-      return;
-    }
-    const angleValue = parseFloat(angle.angle.replace(/°/g, ''));
-    const roundedValue = Math.round(angleValue);
-    if (roundedValue === 90 || roundedValue === 270 || roundedValue === 45 || roundedValue === 315) {
-      return;
-    }
-    const labelX = parseFloat(angle.labelPosition.x);
-    const labelY = parseFloat(angle.labelPosition.y);
-    minX = Math.min(minX, labelX - 50);
-    maxX = Math.max(maxX, labelX + 50);
-    minY = Math.min(minY, labelY - 30);
-    maxY = Math.max(maxY, labelY + ARROW_SIZE + 30);
-  });
-
-  // Process commit positions
-  commits.forEach(commit => {
-    if (commit.position) {
-      const cx = parseFloat(commit.position.x);
-      const cy = parseFloat(commit.position.y);
-      const labelWidth = 90;
-      const labelHeight = 36;
-      minX = Math.min(minX, cx - labelWidth/2 - 10);
-      maxX = Math.max(maxX, cx + labelWidth/2 + 10);
-      minY = Math.min(minY, cy - labelHeight/2 - 10);
-      maxY = Math.max(maxY, cy + labelHeight/2 + 10);
-    }
-  });
-
-  // Process opposite lines if enabled
-  if (showOppositeLines && path.points.length > 1) {
-    let angle = oppositeLinesDirection === 'far' ? 135 : 315;
-    const angleRad = angle * Math.PI / 180;
-    const dx = Math.cos(angleRad);
-    const dy = Math.sin(angleRad);
-
-    path.points.forEach(point => {
-      const x = parseFloat(point.x);
-      const y = parseFloat(point.y);
-      const projX = x + dx * OPPOSITE_LINES_LENGTH;
-      const projY = y + dy * OPPOSITE_LINES_LENGTH;
-      minX = Math.min(minX, x, projX);
-      maxX = Math.max(maxX, x, projX);
-      minY = Math.min(minY, y, projY);
-      maxY = Math.max(maxY, y, projY);
+// ═════════════════════════════════════════════════════════════════════════════
+// OFFSET SEGMENTS (for border)
+// ═════════════════════════════════════════════════════════════════════════════
+const calcOffsetSegments = (path, direction, dist = 15) => {
+  if (!validatePoints(path.points)) return [];
+  const segs = [];
+  for (let i = 0; i < path.points.length - 1; i++) {
+    const p1 = path.points[i], p2 = path.points[i + 1];
+    const dx  = parseFloat(p2.x) - parseFloat(p1.x);
+    const dy  = parseFloat(p2.y) - parseFloat(p1.y);
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len === 0) continue;
+    const ux = dx / len, uy = dy / len;
+    const nx = direction === 'inside' ?  uy : -uy;
+    const ny = direction === 'inside' ? -ux :  ux;
+    segs.push({
+      p1: { x: parseFloat(p1.x) + nx * dist, y: parseFloat(p1.y) + ny * dist },
+      p2: { x: parseFloat(p2.x) + nx * dist, y: parseFloat(p2.y) + ny * dist },
     });
   }
+  return segs;
+};
 
-  // Process border
-  if (showBorder && path.points.length > 1) {
-    const offsetSegments = calculateOffsetSegments(path, borderOffsetDirection);
-    offsetSegments.forEach((seg) => {
-      minX = Math.min(minX, seg.p1.x, seg.p2.x);
-      maxX = Math.max(maxX, seg.p1.x, seg.p2.x);
-      minY = Math.min(minY, seg.p1.y, seg.p2.y);
-      maxY = Math.max(maxY, seg.p1.y, seg.p2.y);
-    });
-    
-    const segment = offsetSegments[0];
-    if (segment) {
-      const origP1 = path.points[0];
-      const origP2 = path.points[1];
-      if (origP1 && origP2) {
-        const dx = parseFloat(origP2.x) - parseFloat(origP1.x);
-        const dy = parseFloat(origP2.y) - parseFloat(origP1.y);
-        const length = Math.sqrt(dx * dx + dy * dy);
-        if (length !== 0) {
-          const unitX = dx / length;
-          const unitY = dy / length;
-          const midX_main = (parseFloat(origP1.x) + parseFloat(origP2.x)) / 2;
-          const midY_main = (parseFloat(origP1.y) + parseFloat(origP2.y)) / 2;
-          const arrowNormalX = borderOffsetDirection === 'inside' ? -unitY : unitY;
-          const arrowNormalY = borderOffsetDirection === 'inside' ? unitX : -unitX;
-          const chevronBaseDistance = 10;
-          const chevronSize = 8;
-          const chevronX = midX_main + arrowNormalX * chevronBaseDistance;
-          const chevronY = midY_main + arrowNormalY * chevronBaseDistance;
-          minX = Math.min(minX, chevronX - chevronSize);
-          maxX = Math.max(maxX, chevronX + chevronSize);
-          minY = Math.min(minY, chevronY - chevronSize);
-          maxY = Math.max(maxY, chevronY + chevronSize);
-        }
-      }
-    }
+// ═════════════════════════════════════════════════════════════════════════════
+// FOLD LABEL POSITION
+// ═════════════════════════════════════════════════════════════════════════════
+const calcFoldLabelPos = (segment, isFirst, p1, p2, foldType, foldAngle = 0, flipped = false) => {
+  const dx = parseFloat(p2.x) - parseFloat(p1.x);
+  const dy = parseFloat(p2.y) - parseFloat(p1.y);
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len === 0) return null;
+
+  const ux   = dx / len, uy = dy / len;
+  const base = isFirst ? p1 : p2;
+  let bdx = isFirst ? ux : -ux, bdy = isFirst ? uy : -uy;
+  let nx  = -bdy, ny = bdx;
+  if (flipped) { nx = -nx; ny = -ny; }
+
+  let ldx, ldy;
+  if (foldType === 'Crush') {
+    ldx = nx; ldy = ny;
+  } else {
+    const rad = foldAngle * Math.PI / 180;
+    ldx = bdx * Math.cos(rad) - bdy * Math.sin(rad);
+    ldy = bdx * Math.sin(rad) + bdy * Math.cos(rad);
+    if (ldx * nx + ldy * ny < 0) { ldx = -ldx; ldy = -ldy; }
   }
-
-  const padding = isLargeDiagram ? Math.max(50, (maxX - minX) * 0.05) : 40;
+  const dl = Math.sqrt(ldx * ldx + ldy * ldy);
+  if (dl > 0) { ldx /= dl; ldy /= dl; }
   return {
-    minX: minX - padding,
-    minY: minY - padding,
-    maxX: maxX + padding,
-    maxY: maxY + padding,
+    x: parseFloat(base.x) + ldx * FOLD_LABEL_DISTANCE,
+    y: parseFloat(base.y) + ldy * FOLD_LABEL_DISTANCE,
   };
 };
 
-// Helper function to calculate offset segments for border
- const calculateOffsetSegments = (path, borderOffsetDirection, offsetScale = 1) => {
-  if (!validatePoints(path.points)) return [];
-  const baseOffsetDistance = 15;
-  const offsetDistance = Math.max(4, baseOffsetDistance * offsetScale)
-  const offsetSegments = [];
-  for (let i = 0; i < path.points.length - 1; i++) {
-    const p1 = path.points[i];
-    const p2 = path.points[i + 1];
-    const dx = parseFloat(p2.x) - parseFloat(p1.x);
-    const dy = parseFloat(p2.y) - parseFloat(p1.y);
-    const length = Math.sqrt(dx * dx + dy * dy);
-    if (length === 0) continue;
-    const unitX = dx / length;
-    const unitY = dy / length;
-    const normalX = borderOffsetDirection === 'inside' ? unitY : -unitY;
-    const normalY = borderOffsetDirection === 'inside' ? -unitX : unitX;
-    offsetSegments.push({
-      p1: { x: parseFloat(p1.x) + normalX * offsetDistance, y: parseFloat(p1.y) + normalY * offsetDistance },
-      p2: { x: parseFloat(p2.x) + normalX * offsetDistance, y: parseFloat(p2.y) + normalY * offsetDistance },
-    });
-  }
-  return offsetSegments;
+// ═════════════════════════════════════════════════════════════════════════════
+// STAT HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+const calcTotalFolds = path => {
+  let total = (path.angles || []).length;
+  (path.segments || []).forEach(seg => {
+    const t = typeof seg.fold === 'object' && seg.fold ? seg.fold.type || 'None' : seg.fold || 'None';
+    if (t !== 'None') total += t === 'Crush' ? 2 : 1;
+  });
+  return total;
 };
 
-// Helper function to calculate fold label position with fixed distance
-const calculateFoldLabelPosition = (segment, isFirstSegment, p1, p2, foldType, foldAngle = 0, flipped = false) => {
-  const dx = parseFloat(p2.x) - parseFloat(p1.x);
-  const dy = parseFloat(p2.y) - parseFloat(p1.y);
-  const length = Math.sqrt(dx * dx + dy * dy);
-  
-  if (length === 0) return null;
-
-  const unitX = dx / length;
-  const unitY = dy / length;
-  
-  const basePoint = isFirstSegment ? p1 : p2;
-  
-  let baseDirX, baseDirY;
-  if (isFirstSegment) {
-    baseDirX = unitX;
-    baseDirY = unitY;
-  } else {
-    baseDirX = -unitX;
-    baseDirY = -unitY;
-  }
-
-  let normalX = -baseDirY;
-  let normalY = baseDirX;
-  
-  if (flipped) {
-    normalX = -normalX;
-    normalY = -normalY;
-  }
-
-  let labelDirX, labelDirY;
-  
-  if (foldType === 'Crush') {
-    labelDirX = normalX;
-    labelDirY = normalY;
-  } else {
-    const foldAngleRad = (foldAngle * Math.PI) / 180;
-    labelDirX = baseDirX * Math.cos(foldAngleRad) - baseDirY * Math.sin(foldAngleRad);
-    labelDirY = baseDirX * Math.sin(foldAngleRad) + baseDirY * Math.cos(foldAngleRad);
-    
-    const dotProduct = labelDirX * normalX + labelDirY * normalY;
-    if (dotProduct < 0) {
-      labelDirX = -labelDirX;
-      labelDirY = -labelDirY;
-    }
-  }
-
-  const dirLength = Math.sqrt(labelDirX * labelDirX + labelDirY * labelDirY);
-  if (dirLength > 0) {
-    labelDirX /= dirLength;
-    labelDirY /= dirLength;
-  }
-
-  const labelX = parseFloat(basePoint.x) + labelDirX * FOLD_LABEL_DISTANCE;
-  const labelY = parseFloat(basePoint.y) + labelDirY * FOLD_LABEL_DISTANCE;
-
-  return { x: labelX, y: labelY };
+const calcGirth = path => {
+  let total = 0;
+  (path.segments || []).forEach(seg => {
+    total += parseFloat((seg.length || '0').replace(/[^0-9.]/g, '')) || 0;
+  });
+  return Math.round(total).toString();
 };
 
-// Helper function to calculate total folds
-const calculateTotalFolds = (path) => {
-  let totalFolds = (path.angles || []).length;
-  if (Array.isArray(path.segments)) {
-    path.segments.forEach(segment => {
-      let foldType = 'None';
-      if (typeof segment.fold === 'object' && segment.fold) {
-        foldType = segment.fold.type || 'None';
-      } else {
-        foldType = segment.fold || 'None';
-      }
-      if (foldType !== 'None') {
-        totalFolds += foldType === 'Crush' ? 2 : 1;
-      }
-    });
-  }
-  return totalFolds;
+const formatQxL = arr => {
+  if (!Array.isArray(arr)) return 'N/A';
+  return arr.map(item =>
+    `${item.quantity} x ${parseFloat(item.length).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
+  ).join('   ');
 };
 
-// Helper function to calculate girth
-const calculateGirth = (path) => {
-  let totalLength = 0;
-  if (Array.isArray(path.segments)) {
-    path.segments.forEach(segment => {
-      const lengthStr = segment.length || '0 m';
-      const lengthNum = parseFloat(lengthStr.replace(/[^0-9.]/g, '')) || 0;
-      totalLength += lengthNum;
-    });
-  }
-  // Round to nearest integer and return as string without decimal
-  return Math.round(totalLength).toString();
-};
-
-// Helper function to format Q x L
-const formatQxL = (quantitiesAndLengths) => {
-  if (!Array.isArray(quantitiesAndLengths)) return 'N/A';
-  return quantitiesAndLengths.map(item => `${item.quantity} x ${parseFloat(item.length).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`).join('   ');
-};
-
-// ─────────────────────────────────────────────────────────────
-// FIX 1: Convert length to mm – integer only, no decimals
-// ─────────────────────────────────────────────────────────────
-const convertMtoMM = (lengthStr) => {
+const mmStr = lengthStr => {
   if (!lengthStr) return '';
-  const num = parseFloat(lengthStr);
-  if (isNaN(num)) return lengthStr;
-  // Round to nearest integer – "230mm" not "230.33mm"
-  return Math.round(num) + 'mm';
+  const n = parseFloat(lengthStr);
+  return isNaN(n) ? lengthStr : `${Math.round(n)}mm`;
 };
 
-// ─────────────────────────────────────────────────────────────
-// FIX 2: Smart SVG generation that adapts to diagram size
-//   - Clamps scaleFactor so tiny diagrams don't blow up labels
-//   - Keeps a minimum logical canvas so small paths stay readable
-//   - Scales stroke widths, label sizes, and font sizes with diagram
-// ─────────────────────────────────────────────────────────────
-const generateSvgString = (path, bounds, scale, showBorder, borderOffsetDirection, labelPositions = {}, commits = [], showOppositeLines = false, oppositeLinesDirection = 'far') => {
+// ═════════════════════════════════════════════════════════════════════════════
+// SVG GENERATOR
+// ═════════════════════════════════════════════════════════════════════════════
+const generateSvg = (
+  path, bounds, scale, showBorder, borderOffsetDirection,
+  labelPositions = {}, commits = [],
+  showOppositeLines = false, oppositeLinesDirection = 'far',
+  W = 800
+) => {
+  const H = W;
+
   if (!validatePoints(path.points)) {
-    console.warn('Skipping SVG generation for path due to invalid points:', path);
-    return '<svg width="100%" height="100%" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><text x="50" y="50" font-size="14" text-anchor="middle" fill="#000000">Invalid path data</text></svg>';
+    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="${W}" height="${H}" fill="${COLORS.diagramBg}"/>
+      <text x="50%" y="50%" font-size="20" text-anchor="middle" fill="#666">Invalid path data</text>
+    </svg>`;
   }
-  
-  const rawWidth  = bounds.maxX - bounds.minX;
-  const rawHeight = bounds.maxY - bounds.minY;
 
-  // ── Adaptive viewBox ──────────────────────────────────────
-  // Use a fixed 1200×1200 logical canvas but clamp scaleFactor
-  // so small diagrams (e.g. 3 pts × 20mm) don't produce
-  // absurdly large strokes / labels.
-  const targetViewBoxSize = 1200;
+  const pad     = W * 0.05;
+  const rawW    = bounds.maxX - bounds.minX;
+  const rawH    = bounds.maxY - bounds.minY;
+  const MIN_SPAN = 50;
+  const effW    = Math.max(rawW, MIN_SPAN);
+  const effH    = Math.max(rawH, MIN_SPAN);
+  const sf      = Math.min((W - pad * 2) / effW, (H - pad * 2) / effH);
 
-  // Minimum logical diagram span before padding (avoids divide-by-near-zero)
-  const MIN_SPAN = 80;                        // logical units
-  const effectiveSpan = Math.max(rawWidth, rawHeight, MIN_SPAN);
+  const drawW   = effW * sf;
+  const drawH   = effH * sf;
+  const offsetX = (W - drawW) / 2 - bounds.minX * sf;
+  const offsetY = (H - drawH) / 2 - bounds.minY * sf;
 
-  // scaleFactor maps model coords → viewBox coords
-  const rawScaleFactor = targetViewBoxSize * 0.75 / effectiveSpan;
-
-  // Clamp: never scale up by more than 4× (prevents label explosion on tiny diagrams)
-  const MAX_SCALE = 4;
-  const scaleFactor = Math.min(rawScaleFactor, MAX_SCALE);
-
-  // Centre the scaled content inside the viewBox
-  const offsetX = (targetViewBoxSize - rawWidth  * scaleFactor) / 2;
-  const offsetY = (targetViewBoxSize - rawHeight * scaleFactor) / 2;
-  const viewBox  = `0 0 ${targetViewBoxSize} ${targetViewBoxSize}`;
-
-  // ── Adaptive stroke / label metrics ──────────────────────
-  // When scaleFactor is small (large diagram) strokes stay thin;
-  // when scaleFactor is large (small diagram) we cap them so they
-  // don't swamp the line art.
-  const uiScale   = Math.min(scaleFactor, 1.5); // used for stroke/label sizing
-
-  // ── offsetScale computation (new) ─────────────────────────
-  // Combines UI scaling with diagram relative size so offsets (chevrons, tails, etc.)
-  // remain balanced across tiny and huge diagrams.
-  const avgSpan = (rawWidth + rawHeight) / 2;
-  const referenceSpan = 500;   // expected average diagram size
-  const sizeBasedScale = Math.min(1.5, Math.max(0.5, avgSpan / referenceSpan));
-  const offsetScale = uiScale * sizeBasedScale;   // final scaling for offsets
-
-  const fontSize  = Math.max(14, Math.min(22, 18 * uiScale));
-  const labelH    = Math.max(28, Math.min(40, 36 * uiScale));
-  const labelRx   = Math.max(8,  Math.min(14, 12 * uiScale));
-  const tailSz    = Math.max(7,  Math.min(12, 10 * uiScale));
-  const attachSz  = Math.max(7,  Math.min(12, 10 * uiScale));
-  const ptRadius  = Math.max(2,  Math.min(5,   3 * uiScale));
-  const mainStroke  = Math.max(1.5, Math.min(3,   2.5 * uiScale));
-  const foldStroke  = Math.max(1,   Math.min(2.5, 2   * uiScale));
-  const borderStroke = Math.max(1.5, Math.min(4,  3   * uiScale));
-  const oppStroke  = Math.max(2,   Math.min(5,   3.5 * uiScale));
-  const shadowBlur = Math.max(1,   Math.min(3,   2   * uiScale));
-  // ─────────────────────────────────────────────────────────
-
-  const transformCoord = (x, y) => ({
-    x: (parseFloat(x) - bounds.minX) * scaleFactor + offsetX,
-    y: (parseFloat(y) - bounds.minY) * scaleFactor + offsetY,
+  const tc = (x, y) => ({
+    x: parseFloat(x) * sf + offsetX,
+    y: parseFloat(y) * sf + offsetY,
   });
 
-  let svgDefs = `
-    <defs>
-      <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feGaussianBlur in="SourceAlpha" stdDeviation="${shadowBlur}" />
-        <feOffset dx="${shadowBlur}" dy="${shadowBlur}" result="offsetblur" />
-        <feFlood flood-color="${COLORS.shadow}" />
-        <feComposite in2="offsetblur" operator="in" />
-        <feMerge>
-          <feMergeNode />
-          <feMergeNode in="SourceGraphic" />
-        </feMerge>
-      </filter>
-    </defs>
-  `;
+  const PATH_SW   = 2.5;
+  const POINT_R   = 4;
+  const BORDER_SW = 1.8;
+  const OPP_SW    = 1.5;
+  const FOLD_SW   = 2.0;
+  const LABEL_H   = 28;
+  const LABEL_RX  = 6;
+  const FONT_SZ   = 13;
+  const ARROW_SZ  = 8;
+  const SHADOW_B  = 2;
 
-  // Generate grid lines
-  let gridLines = '';
-  const minorGridSize = GRID_SIZE / 2;
-  const gridStartX = Math.floor(bounds.minX / GRID_SIZE) * GRID_SIZE;
-  const gridStartY = Math.floor(bounds.minY / GRID_SIZE) * GRID_SIZE;
-  const gridEndX   = Math.ceil(bounds.maxX  / GRID_SIZE) * GRID_SIZE;
-  const gridEndY   = Math.ceil(bounds.maxY  / GRID_SIZE) * GRID_SIZE;
+  const targetGridPx = 50;
+  const rawStep      = targetGridPx / sf;
+  const magnitude    = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const niceOptions  = [1, 2, 5, 10];
+  let gridStep       = magnitude;
+  for (const n of niceOptions) {
+    const candidate = n * magnitude;
+    if (candidate >= rawStep * 0.8) { gridStep = candidate; break; }
+  }
+  const gridPx = gridStep * sf;
 
-  for (let x = gridStartX; x <= gridEndX; x += minorGridSize) {
-    const {x: tx1, y: ty1} = transformCoord(x, gridStartY);
-    const {x: tx2, y: ty2} = transformCoord(x, gridEndY);
-    gridLines += `<line x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}" stroke="#e0e0e0" stroke-width="0.3"/>`;
-  }
-  for (let y = gridStartY; y <= gridEndY; y += minorGridSize) {
-    const {x: tx1, y: ty1} = transformCoord(gridStartX, y);
-    const {x: tx2, y: ty2} = transformCoord(gridEndX, y);
-    gridLines += `<line x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}" stroke="#e0e0e0" stroke-width="0.3"/>`;
-  }
-  for (let x = gridStartX; x <= gridEndX; x += GRID_SIZE) {
-    const {x: tx1, y: ty1} = transformCoord(x, gridStartY);
-    const {x: tx2, y: ty2} = transformCoord(x, gridEndY);
-    gridLines += `<line x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}" stroke="#c4b7b7" stroke-width="0.5"/>`;
-  }
-  for (let y = gridStartY; y <= gridEndY; y += GRID_SIZE) {
-    const {x: tx1, y: ty1} = transformCoord(gridStartX, y);
-    const {x: tx2, y: ty2} = transformCoord(gridEndX, y);
-    gridLines += `<line x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}" stroke="#c4b7b7" stroke-width="0.5"/>`;
-  }
+  const defs = `<defs>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="${SHADOW_B}"/>
+      <feOffset dx="1" dy="1" result="ob"/>
+      <feFlood flood-color="${COLORS.shadow}"/>
+      <feComposite in2="ob" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="clip">
+      <rect x="0" y="0" width="${W}" height="${H}"/>
+    </clipPath>
+  </defs>`;
 
-  // Path points & lines
-  let svgContent = path.points.map((point) => {
-    const {x: cx, y: cy} = transformCoord(point.x, point.y);
-    return `<circle cx="${cx}" cy="${cy}" r="${ptRadius}" fill="#000000" filter="url(#dropShadow)"/>`;
-  }).join('');
-
-  if (path.points.length > 1) {
-    const d = path.points.map(p => {
-      const {x, y} = transformCoord(p.x, p.y);
-      return `${x},${y}`;
-    }).join(' L');
-    svgContent += `<path d="M${d}" stroke="#000000" stroke-width="${mainStroke}" fill="none"/>`;
+  let bg = `<rect x="0" y="0" width="${W}" height="${H}" fill="${COLORS.diagramBg}"/>`;
+  const halfGridPx = gridPx / 2;
+  for (let gx = (offsetX % halfGridPx + halfGridPx) % halfGridPx; gx < W; gx += halfGridPx) {
+    bg += `<line x1="${gx.toFixed(1)}" y1="0" x2="${gx.toFixed(1)}" y2="${H}" stroke="${COLORS.minorGrid}" stroke-width="0.6"/>`;
+  }
+  for (let gy = (offsetY % halfGridPx + halfGridPx) % halfGridPx; gy < H; gy += halfGridPx) {
+    bg += `<line x1="0" y1="${gy.toFixed(1)}" x2="${W}" y2="${gy.toFixed(1)}" stroke="${COLORS.minorGrid}" stroke-width="0.6"/>`;
+  }
+  for (let gx = (offsetX % gridPx + gridPx) % gridPx; gx < W; gx += gridPx) {
+    bg += `<line x1="${gx.toFixed(1)}" y1="0" x2="${gx.toFixed(1)}" y2="${H}" stroke="${COLORS.majorGrid}" stroke-width="1"/>`;
+  }
+  for (let gy = (offsetY % gridPx + gridPx) % gridPx; gy < H; gy += gridPx) {
+    bg += `<line x1="0" y1="${gy.toFixed(1)}" x2="${W}" y2="${gy.toFixed(1)}" stroke="${COLORS.majorGrid}" stroke-width="1"/>`;
   }
 
-  // Opposite lines
-  if (showOppositeLines && path.points.length > 0) {
-    const angle = oppositeLinesDirection === 'far' ? 135 : 315;
-    const angleRad = angle * Math.PI / 180;
-    const dx = Math.cos(angleRad);
-    const dy = Math.sin(angleRad);
-    
-    path.points.forEach((point) => {
-      const x = parseFloat(point.x);
-      const y = parseFloat(point.y);
-      const projX = x + dx * OPPOSITE_LINES_LENGTH;
-      const projY = y + dy * OPPOSITE_LINES_LENGTH;
-      const {x: x1, y: y1} = transformCoord(x, y);
-      const {x: x2, y: y2} = transformCoord(projX, projY);
-      svgContent += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${COLORS.oppositeLines}" stroke-width="${oppStroke}" stroke-opacity="0.5"/>`;
+  let c = '';
+
+  // ── Opposite lines ───────────────────────────────────────────────────────
+  if (showOppositeLines) {
+    const angle  = oppositeLinesDirection === 'far' ? 135 : 315;
+    const rad    = angle * Math.PI / 180;
+    const dx     = Math.cos(rad), dy = Math.sin(rad);
+    path.points.forEach(p => {
+      const x  = parseFloat(p.x), y = parseFloat(p.y);
+      const s  = tc(x, y);
+      const e  = tc(x + dx * OPPOSITE_LINES_LEN, y + dy * OPPOSITE_LINES_LEN);
+      c += `<line x1="${s.x.toFixed(1)}" y1="${s.y.toFixed(1)}" x2="${e.x.toFixed(1)}" y2="${e.y.toFixed(1)}" stroke="${COLORS.oppLines}" stroke-width="${OPP_SW}" stroke-opacity="0.6"/>`;
     });
   }
 
-  // Border offset segments
+  // ── Border (dashed offset) + RED ARROW ───────────────────────────────────
   if (showBorder && path.points.length > 1) {
-const offsetSegments = calculateOffsetSegments(path, borderOffsetDirection, offsetScale);
-    svgContent += offsetSegments.map((segment) => {
-      const {x: x1, y: y1} = transformCoord(segment.p1.x, segment.p1.y);
-      const {x: x2, y: y2} = transformCoord(segment.p2.x, segment.p2.y);
-      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#000000" stroke-width="${borderStroke}" stroke-dasharray="6,4"/>`;
-    }).join('');
-    
-    const segment = offsetSegments[0];
-    if (segment) {
-      const origP1 = path.points[0];
-      const origP2 = path.points[1];
-      if (origP1 && origP2) {
-        const dx = parseFloat(origP2.x) - parseFloat(origP1.x);
-        const dy = parseFloat(origP2.y) - parseFloat(origP1.y);
-        const length = Math.sqrt(dx * dx + dy * dy);
-        if (length !== 0) {
-          const unitX = dx / length;
-          const unitY = dy / length;
-          const midX_main = (parseFloat(origP1.x) + parseFloat(origP2.x)) / 2;
-          const midY_main = (parseFloat(origP1.y) + parseFloat(origP2.y)) / 2;
-          const arrowNormalX = borderOffsetDirection === 'inside' ? -unitY : unitY;
-          const arrowNormalY = borderOffsetDirection === 'inside' ? unitX : -unitX;
-        const chevronSize = 8 * offsetScale;
-const chevronBaseDistance = 10 * offsetScale;
-          const chevronX = midX_main + arrowNormalX * chevronBaseDistance;
-          const chevronY = midY_main + arrowNormalY * chevronBaseDistance;
-          const {x: chevronXView, y: chevronYView} = transformCoord(chevronX, chevronY);
-          const cvSz = chevronSize * scaleFactor;
-          const direction = 1;
-          const chevronPath = `
-            M${chevronXView + cvSz * arrowNormalX * direction + cvSz * unitX},${chevronYView + cvSz * arrowNormalY * direction + cvSz * unitY}
-            L${chevronXView},${chevronYView}
-            L${chevronXView + cvSz * arrowNormalX * direction - cvSz * unitX},${chevronYView + cvSz * arrowNormalY * direction - cvSz * unitY}
-            Z`;
-          svgContent += `<path d="${chevronPath}" stroke="${COLORS.accent}" stroke-width="2" fill="${COLORS.accent}"/>`;
-        }
+    const segs = calcOffsetSegments(path, borderOffsetDirection, 15);
+    segs.forEach(s => {
+      const a = tc(s.p1.x, s.p1.y), b = tc(s.p2.x, s.p2.y);
+      c += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#374151" stroke-width="${BORDER_SW}" stroke-dasharray="8,5"/>`;
+    });
+
+    if (segs.length > 0 && path.points[0] && path.points[1]) {
+      const p1 = path.points[0], p2 = path.points[1];
+      const dx  = parseFloat(p2.x) - parseFloat(p1.x);
+      const dy  = parseFloat(p2.y) - parseFloat(p1.y);
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len !== 0) {
+        const ux = dx / len, uy = dy / len;
+        const mx = (parseFloat(p1.x) + parseFloat(p2.x)) / 2;
+        const my = (parseFloat(p1.y) + parseFloat(p2.y)) / 2;
+        const nx = borderOffsetDirection === 'inside' ? -uy :  uy;
+        const ny = borderOffsetDirection === 'inside' ?  ux : -ux;
+        const ARROW_OFFSET = 10;
+        const chX = mx + nx * ARROW_OFFSET;
+        const chY = my + ny * ARROW_OFFSET;
+        const { x: cvX, y: cvY } = tc(chX, chY);
+        const cvS = 10;
+        c += `<path d="M${cvX + cvS * nx + cvS * ux},${cvY + cvS * ny + cvS * uy} L${cvX},${cvY} L${cvX + cvS * nx - cvS * ux},${cvY + cvS * ny - cvS * uy} Z" stroke="${COLORS.accent}" stroke-width="2" fill="${COLORS.accent}"/>`;
       }
     }
   }
 
-  // ── Segment labels ────────────────────────────────────────
-  const labelBg        = '#FFFFFF';
-  const labelTextColor = '#000000';
-  const tailFill       = '#000000';
+  // ── Main path ────────────────────────────────────────────────────────────
+  if (path.points.length > 1) {
+    const pts = path.points.map(p => { const { x, y } = tc(p.x, p.y); return `${x.toFixed(1)},${y.toFixed(1)}`; }).join(' L ');
+    c += `<path d="M ${pts}" stroke="#1e293b" stroke-width="${PATH_SW}" fill="none" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
 
-  svgContent += (Array.isArray(path.segments) ? path.segments : []).map((segment, i) => {
-    const p1 = path.points[i];
-    const p2 = path.points[i + 1];
-    if (!p1 || !p2 || !segment.labelPosition) return '';
-    
-    const {x: posX, y: posY} = transformCoord(segment.labelPosition.x, segment.labelPosition.y);
-    const {x: p1x, y: p1y}   = transformCoord(p1.x, p1.y);
-    const {x: p2x, y: p2y}   = transformCoord(p2.x, p2.y);
-    const midX = (p1x + p2x) / 2;
-    const midY = (p1y + p2y) / 2;
-    const labelDx    = midX - posX;
-    const labelDy    = midY - posY;
-    const absLabelDx = Math.abs(labelDx);
-    const absLabelDy = Math.abs(labelDy);
+  // ── Points ───────────────────────────────────────────────────────────────
+  path.points.forEach(p => {
+    const { x, y } = tc(p.x, p.y);
+    c += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${POINT_R}" fill="#1e293b" stroke="#fff" stroke-width="1.5" filter="url(#ds)"/>`;
+  });
 
-    // FIX 1 applied here – integer mm, no decimal
-    const lengthDisplay = convertMtoMM(segment.length || '');
-    const textContent   = lengthDisplay;
-    
-    const approxTextWidth = textContent.length * (fontSize * 0.6);
-    const labelWidth = Math.max(80, approxTextWidth + 20);
-
-    let tailPath = '';
-    if (absLabelDx > absLabelDy) {
-      if (labelDx < 0) {
-        const baseX = posX - labelWidth / 2;
-        const tipX  = baseX - tailSz;
-        tailPath = `M${baseX} ${posY - attachSz/2} L${baseX} ${posY + attachSz/2} L${tipX} ${posY} Z`;
-      } else {
-        const baseX = posX + labelWidth / 2;
-        const tipX  = baseX + tailSz;
-        tailPath = `M${baseX} ${posY - attachSz/2} L${baseX} ${posY + attachSz/2} L${tipX} ${posY} Z`;
-      }
+  const makeTail = (px, py, tx, ty, tw, lh) => {
+    const ldx = tx - px, ldy = ty - py;
+    if (Math.abs(ldx) > Math.abs(ldy)) {
+      const bx  = ldx < 0 ? px - tw / 2 : px + tw / 2;
+      const dir = ldx < 0 ? -ARROW_SZ : ARROW_SZ;
+      return `M${bx} ${py - ARROW_SZ / 2} L${bx} ${py + ARROW_SZ / 2} L${bx + dir} ${py} Z`;
     } else {
-      if (labelDy < 0) {
-        const baseY = posY - labelH / 2;
-        const tipY  = baseY - tailSz;
-        tailPath = `M${posX - attachSz/2} ${baseY} L${posX + attachSz/2} ${baseY} L${posX} ${tipY} Z`;
-      } else {
-        const baseY = posY + labelH / 2;
-        const tipY  = baseY + tailSz;
-        tailPath = `M${posX - attachSz/2} ${baseY} L${posX + attachSz/2} ${baseY} L${posX} ${tipY} Z`;
-      }
+      const by  = ldy < 0 ? py - lh / 2 : py + lh / 2;
+      const dir = ldy < 0 ? -ARROW_SZ : ARROW_SZ;
+      return `M${px - ARROW_SZ / 2} ${by} L${px + ARROW_SZ / 2} ${by} L${px} ${by + dir} Z`;
+    }
+  };
+
+  const labelPill = (px, py, text, fillColor = '#ffffff', textColor = '#111827', arrowFill = '#111827', tailPath = '') =>
+    `<g filter="url(#ds)">
+      <rect x="${(px - Math.max(60, text.length * 7.5 + 16) / 2).toFixed(1)}" y="${(py - LABEL_H / 2).toFixed(1)}" width="${Math.max(60, text.length * 7.5 + 16).toFixed(1)}" height="${LABEL_H}" fill="${fillColor}" rx="${LABEL_RX}" stroke="#d1d5db" stroke-width="0.8"/>
+      ${tailPath ? `<path d="${tailPath}" fill="${arrowFill}"/>` : ''}
+      <text x="${px.toFixed(1)}" y="${py.toFixed(1)}" font-size="${FONT_SZ}" font-family="Helvetica, Arial, sans-serif" font-weight="600" fill="${textColor}" text-anchor="middle" dominant-baseline="middle">${text}</text>
+    </g>`;
+
+  c += (path.segments || []).map((seg, i) => {
+    const p1 = path.points[i], p2 = path.points[i + 1];
+    if (!p1 || !p2 || !seg.labelPosition) return '';
+
+    const { x: px, y: py }   = tc(seg.labelPosition.x, seg.labelPosition.y);
+    const { x: p1x, y: p1y } = tc(p1.x, p1.y);
+    const { x: p2x, y: p2y } = tc(p2.x, p2.y);
+    const midX = (p1x + p2x) / 2, midY = (p1y + p2y) / 2;
+    const text  = mmStr(seg.length || '');
+    const tw    = Math.max(60, text.length * 7.5 + 16);
+    const tail  = makeTail(px, py, midX, midY, tw, LABEL_H);
+    let out     = labelPill(px, py, text, '#ffffff', '#111827', '#111827', tail);
+
+    let fType = 'None', fLen = FOLD_LENGTH, fAngle = 0, fTail = 20, fFlip = false;
+    if (typeof seg.fold === 'object' && seg.fold) {
+      fType  = seg.fold.type  || 'None';
+      fLen   = parseFloat(seg.fold.length) || FOLD_LENGTH;
+      fAngle = parseFloat(seg.fold.angle)  || 0;
+      fTail  = parseFloat(seg.fold.tailLength) || 20;
+      fFlip  = !!seg.fold.flipped;
+    } else {
+      fType = seg.fold || 'None';
     }
 
-    // ── Fold element ─────────────────────────────────────────
-    let foldElement = '';
-    let foldType       = 'None';
-    let foldLength     = FOLD_LENGTH;
-    let foldAngle      = 0;
-    let tailLengthVal  = 20;
-    let flipped        = false;
-    
-    if (typeof segment.fold === 'object' && segment.fold) {
-      foldType      = segment.fold.type      || 'None';
-      foldLength    = parseFloat(segment.fold.length)    || FOLD_LENGTH;
-      foldAngle     = parseFloat(segment.fold.angle)     || 0;
-      tailLengthVal = parseFloat(segment.fold.tailLength) || 20;
-      flipped       = !!segment.fold.flipped;
-    } else {
-      foldType = segment.fold || 'None';
-    }
+    const isFirst = i === 0;
+    const isLast  = i === path.points.length - 2;
 
-    if (foldType !== 'None') {
-      const dx = parseFloat(p2.x) - parseFloat(p1.x);
-      const dy = parseFloat(p2.y) - parseFloat(p1.y);
-      const segLength = Math.sqrt(dx * dx + dy * dy);
-      
-      if (segLength !== 0) {
-        const unitX = dx / segLength;
-        const unitY = dy / segLength;
-        const isFirstSegment = i === 0;
-        const isLastSegment  = i === path.points.length - 2;
-        
-        if (isFirstSegment || isLastSegment) {
-          let modelFoldBaseX = isFirstSegment ? parseFloat(p1.x) : parseFloat(p2.x);
-          let modelFoldBaseY = isFirstSegment ? parseFloat(p1.y) : parseFloat(p2.y);
-          let foldPath = '';
-          
-          if (foldType === 'Crush') {
-            let normalX = isFirstSegment ? -unitY : unitY;
-            let normalY = isFirstSegment ?  unitX : -unitX;
-            if (flipped) { normalX = -normalX; normalY = -normalY; }
-            const angleRad   = foldAngle * Math.PI / 180;
-            const cosA = Math.cos(angleRad), sinA = Math.sin(angleRad);
-            const rotNormalX = normalX * cosA - normalY * sinA;
-            const rotNormalY = normalX * sinA + normalY * cosA;
-            const curveHeight = foldLength * 0.6;
-            const curveWidth  = foldLength * 0.8;
-            const modelStartX = modelFoldBaseX, modelStartY = modelFoldBaseY;
-            const modelCurveEndX = modelStartX + rotNormalX * curveWidth;
-            const modelCurveEndY = modelStartY + rotNormalY * curveWidth;
-            const bulgeSign = flipped ? -1 : 1;
-            const modelCp1X = modelStartX + rotNormalX * (curveWidth / 3) + bulgeSign * (-rotNormalY * curveHeight);
-            const modelCp1Y = modelStartY + rotNormalY * (curveWidth / 3) + bulgeSign * ( rotNormalX * curveHeight);
-            const modelCp2X = modelStartX + rotNormalX * (2 * curveWidth / 3) + bulgeSign * (-rotNormalY * curveHeight);
-            const modelCp2Y = modelStartY + rotNormalY * (2 * curveWidth / 3) + bulgeSign * ( rotNormalX * curveHeight);
-            const tailDirX   = isFirstSegment ?  unitX : -unitX;
-            const tailDirY   = isFirstSegment ?  unitY : -unitY;
-            const modelTailX = modelCurveEndX + tailDirX * tailLengthVal;
-            const modelTailY = modelCurveEndY + tailDirY * tailLengthVal;
-            
-            const svgStart    = transformCoord(modelStartX,    modelStartY);
-            const svgCp1      = transformCoord(modelCp1X,      modelCp1Y);
-            const svgCp2      = transformCoord(modelCp2X,      modelCp2Y);
-            const svgCurveEnd = transformCoord(modelCurveEndX, modelCurveEndY);
-            const svgTail     = transformCoord(modelTailX,     modelTailY);
-            foldPath = `M${svgStart.x},${svgStart.y} C${svgCp1.x},${svgCp1.y} ${svgCp2.x},${svgCp2.y} ${svgCurveEnd.x},${svgCurveEnd.y} L${svgTail.x},${svgTail.y}`;
-          } else {
-            let foldAngleVal = flipped ? 360 - foldAngle : foldAngle;
-            const foldAngleRad = foldAngleVal * Math.PI / 180;
-            const baseDirX = isFirstSegment ?  unitX : -unitX;
-            const baseDirY = isFirstSegment ?  unitY : -unitY;
-            const foldDirX = baseDirX * Math.cos(foldAngleRad) - baseDirY * Math.sin(foldAngleRad);
-            const foldDirY = baseDirX * Math.sin(foldAngleRad) + baseDirY * Math.cos(foldAngleRad);
-            const modelFoldEndX = modelFoldBaseX + foldDirX * foldLength;
-            const modelFoldEndY = modelFoldBaseY + foldDirY * foldLength;
-            const svgBase = transformCoord(modelFoldBaseX, modelFoldBaseY);
-            const svgEnd  = transformCoord(modelFoldEndX,  modelFoldEndY);
-            foldPath = `M${svgBase.x},${svgBase.y} L${svgEnd.x},${svgEnd.y}`;
-          }
-          
-          foldElement = `<path d="${foldPath}" stroke="#000000" stroke-width="${foldStroke}" fill="none" filter="url(#dropShadow)"/>`;
+    if (fType !== 'None' && (isFirst || isLast)) {
+      const dx  = parseFloat(p2.x) - parseFloat(p1.x);
+      const dy  = parseFloat(p2.y) - parseFloat(p1.y);
+      const sl  = Math.sqrt(dx * dx + dy * dy);
+      if (sl !== 0) {
+        const ux = dx / sl, uy = dy / sl;
+        const bx = isFirst ? parseFloat(p1.x) : parseFloat(p2.x);
+        const by = isFirst ? parseFloat(p1.y) : parseFloat(p2.y);
+        let fPath = '';
 
-          const calculatedFoldLabelPos = calculateFoldLabelPosition(
-            segment, isFirstSegment, p1, p2, foldType, foldAngle, flipped
-          );
-          const foldLabelKey = `fold-${path.pathIndex}-${i}`;
-          const foldLabelPos = calculatedFoldLabelPos || labelPositions[foldLabelKey];
+        if (fType === 'Crush') {
+          let nx = isFirst ? -uy : uy, ny = isFirst ? ux : -ux;
+          if (fFlip) { nx = -nx; ny = -ny; }
+          const rad = fAngle * Math.PI / 180;
+          const cA = Math.cos(rad), sA = Math.sin(rad);
+          const rNX = nx * cA - ny * sA, rNY = nx * sA + ny * cA;
+          const cW  = fLen * 0.8, cH = fLen * 0.6;
+          const bs  = fFlip ? -1 : 1;
+          const cp1x = bx + rNX * cW / 3 + bs * (-rNY * cH), cp1y = by + rNY * cW / 3 + bs * (rNX * cH);
+          const cp2x = bx + rNX * 2 * cW / 3 + bs * (-rNY * cH), cp2y = by + rNY * 2 * cW / 3 + bs * (rNX * cH);
+          const cEx  = bx + rNX * cW, cEy = by + rNY * cW;
+          const tdx  = isFirst ? ux : -ux, tdy = isFirst ? uy : -uy;
+          const tx   = cEx + tdx * fTail, ty = cEy + tdy * fTail;
+          const ss = tc(bx, by), c1 = tc(cp1x, cp1y), c2 = tc(cp2x, cp2y), ce = tc(cEx, cEy), et = tc(tx, ty);
+          fPath = `M${ss.x.toFixed(1)},${ss.y.toFixed(1)} C${c1.x.toFixed(1)},${c1.y.toFixed(1)} ${c2.x.toFixed(1)},${c2.y.toFixed(1)} ${ce.x.toFixed(1)},${ce.y.toFixed(1)} L${et.x.toFixed(1)},${et.y.toFixed(1)}`;
+        } else {
+          const fa  = (fFlip ? 360 - fAngle : fAngle) * Math.PI / 180;
+          const bdx = isFirst ? ux : -ux, bdy = isFirst ? uy : -uy;
+          const fdx = bdx * Math.cos(fa) - bdy * Math.sin(fa);
+          const fdy = bdx * Math.sin(fa) + bdy * Math.cos(fa);
+          const sb2 = tc(bx, by), se = tc(bx + fdx * fLen, by + fdy * fLen);
+          fPath = `M${sb2.x.toFixed(1)},${sb2.y.toFixed(1)} L${se.x.toFixed(1)},${se.y.toFixed(1)}`;
+        }
 
-          if (foldLabelPos) {
-            const {x: foldLabelX, y: foldLabelY} = transformCoord(foldLabelPos.x, foldLabelPos.y);
-         const foldLabelText = foldType.toUpperCase();
-            const foldLabelWidth = Math.max(80, foldLabelText.length * (fontSize * 0.6) + 20);
-            
-            let foldTailPath = '';
-            const {x: targetX, y: targetY} = transformCoord(modelFoldBaseX, modelFoldBaseY);
-            const foldLabelDx    = targetX - foldLabelX;
-            const foldLabelDy    = targetY - foldLabelY;
-            const absFoldLabelDx = Math.abs(foldLabelDx);
-            const absFoldLabelDy = Math.abs(foldLabelDy);
+        out += `<path d="${fPath}" stroke="#374151" stroke-width="${FOLD_SW}" fill="none" stroke-linecap="round"/>`;
 
-            if (absFoldLabelDx > absFoldLabelDy) {
-              if (foldLabelDx < 0) {
-                const baseX = foldLabelX - foldLabelWidth / 2;
-                foldTailPath = `M${baseX} ${foldLabelY - attachSz/2} L${baseX} ${foldLabelY + attachSz/2} L${baseX - tailSz} ${foldLabelY} Z`;
-              } else {
-                const baseX = foldLabelX + foldLabelWidth / 2;
-                foldTailPath = `M${baseX} ${foldLabelY - attachSz/2} L${baseX} ${foldLabelY + attachSz/2} L${baseX + tailSz} ${foldLabelY} Z`;
-              }
-            } else {
-              if (foldLabelDy < 0) {
-                const baseY = foldLabelY - labelH / 2;
-                foldTailPath = `M${foldLabelX - attachSz/2} ${baseY} L${foldLabelX + attachSz/2} ${baseY} L${foldLabelX} ${baseY - tailSz} Z`;
-              } else {
-                const baseY = foldLabelY + labelH / 2;
-                foldTailPath = `M${foldLabelX - attachSz/2} ${baseY} L${foldLabelX + attachSz/2} ${baseY} L${foldLabelX} ${baseY + tailSz} Z`;
-              }
-            }
-
-            foldElement += `
-              <g filter="url(#dropShadow)">
-                <rect x="${foldLabelX - foldLabelWidth/2}" y="${foldLabelY - labelH/2}"
-                      width="${foldLabelWidth}" height="${labelH}"
-                      fill="${labelBg}" rx="${labelRx}"
-                      stroke="#000000" stroke-width="0.5"/>
-                <path d="${foldTailPath}" fill="${tailFill}"/>
-                <text x="${foldLabelX}" y="${foldLabelY}" font-size="${fontSize}" font-family="Helvetica" font-weight="bold"
-                      fill="${labelTextColor}" text-anchor="middle" dominant-baseline="middle">
-                  ${foldLabelText}
-                </text>
-              </g>
-            `;
-          }
+        const flp = calcFoldLabelPos(seg, isFirst, p1, p2, fType, fAngle, fFlip);
+        if (flp) {
+          const { x: flX, y: flY } = tc(flp.x, flp.y);
+          const { x: tgX, y: tgY } = tc(bx, by);
+          const flt  = fType.toUpperCase();
+          const ftw  = Math.max(60, flt.length * 7.5 + 16);
+          const ftail = makeTail(flX, flY, tgX, tgY, ftw, LABEL_H);
+          out += labelPill(flX, flY, flt, '#f0f9ff', '#1d4ed8', '#1d4ed8', ftail);
         }
       }
     }
-
-    return `
-      <g filter="url(#dropShadow)">
-        <rect x="${posX - labelWidth/2}" y="${posY - labelH/2}"
-              width="${labelWidth}" height="${labelH}"
-              fill="${labelBg}" rx="${labelRx}"
-              stroke="#000000" stroke-width="0.5"/>
-        <path d="${tailPath}" fill="${tailFill}"/>
-        <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="Helvetica" font-weight="bold"
-              fill="${labelTextColor}" text-anchor="middle" dominant-baseline="middle">
-          ${textContent}
-        </text>
-      </g>
-      ${foldElement}
-    `;
+    return out;
   }).join('');
 
-  // ── Angle labels ──────────────────────────────────────────
-  svgContent += (Array.isArray(path.angles) ? path.angles : []).map((angle) => {
-    if (!angle.labelPosition || typeof angle.labelPosition.x === 'undefined' || typeof angle.labelPosition.y === 'undefined') {
-      return '';
-    }
-    const angleValue   = parseFloat(angle.angle.replace(/°/g, ''));
-    const roundedValue = Math.round(angleValue);
-    if (roundedValue === 90 || roundedValue === 270 || roundedValue === 45 || roundedValue === 315) {
-      return '';
-    }
-    const {x: posX, y: posY} = transformCoord(angle.labelPosition.x, angle.labelPosition.y);
-    const vertexX = angle.vertexIndex && path.points[angle.vertexIndex] ? path.points[angle.vertexIndex].x : angle.labelPosition.x;
-    const vertexY = angle.vertexIndex && path.points[angle.vertexIndex] ? path.points[angle.vertexIndex].y : angle.labelPosition.y;
-    const {x: targetX, y: targetY} = transformCoord(vertexX, vertexY);
-    const labelDx    = targetX - posX;
-    const labelDy    = targetY - posY;
-    const absLabelDx = Math.abs(labelDx);
-    const absLabelDy = Math.abs(labelDy);
-
-    const textContent  = `${roundedValue}°`;
-    const approxTextWidth = textContent.length * (fontSize * 0.6);
-    const labelWidth = Math.max(80, approxTextWidth + 20);
-
-    let tailPath = '';
-    if (absLabelDx > absLabelDy) {
-      if (labelDx < 0) {
-        const baseX = posX - labelWidth / 2;
-        tailPath = `M${baseX} ${posY - attachSz/2} L${baseX} ${posY + attachSz/2} L${baseX - tailSz} ${posY} Z`;
-      } else {
-        const baseX = posX + labelWidth / 2;
-        tailPath = `M${baseX} ${posY - attachSz/2} L${baseX} ${posY + attachSz/2} L${baseX + tailSz} ${posY} Z`;
-      }
-    } else {
-      if (labelDy < 0) {
-        const baseY = posY - labelH / 2;
-        tailPath = `M${posX - attachSz/2} ${baseY} L${posX + attachSz/2} ${baseY} L${posX} ${baseY - tailSz} Z`;
-      } else {
-        const baseY = posY + labelH / 2;
-        tailPath = `M${posX - attachSz/2} ${baseY} L${posX + attachSz/2} ${baseY} L${posX} ${baseY + tailSz} Z`;
-      }
-    }
-
-    return `
-      <g filter="url(#dropShadow)">
-        <rect x="${posX - labelWidth/2}" y="${posY - labelH/2}"
-              width="${labelWidth}" height="${labelH}"
-              fill="${labelBg}" rx="${labelRx}"
-              stroke="#000000" stroke-width="0.5"/>
-        <path d="${tailPath}" fill="${tailFill}"/>
-        <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="Helvetica" font-weight="bold"
-              fill="${labelTextColor}" text-anchor="middle" dominant-baseline="middle">
-          ${roundedValue}°
-        </text>
-      </g>
-    `;
+  c += (path.angles || []).map(angle => {
+    if (!angle.labelPosition) return '';
+    const av = Math.round(parseFloat(angle.angle.replace(/°/g, '')));
+    if ([90, 270, 45, 315].includes(av)) return '';
+    const { x: px, y: py } = tc(angle.labelPosition.x, angle.labelPosition.y);
+    const vx = angle.vertexIndex && path.points[angle.vertexIndex] ? path.points[angle.vertexIndex].x : angle.labelPosition.x;
+    const vy = angle.vertexIndex && path.points[angle.vertexIndex] ? path.points[angle.vertexIndex].y : angle.labelPosition.y;
+    const { x: tx2, y: ty2 } = tc(vx, vy);
+    const text = `${av}°`;
+    const tw   = Math.max(60, text.length * 7.5 + 16);
+    const tail = makeTail(px, py, tx2, ty2, tw, LABEL_H);
+    return labelPill(px, py, text, '#fff7ed', '#c2410c', '#c2410c', tail);
   }).join('');
 
-  // ── Commit labels ─────────────────────────────────────────
-  commits.forEach((commit) => {
-    if (commit.position) {
-      const {x: posX, y: posY} = transformCoord(commit.position.x, commit.position.y);
-      const commitMessage = commit.message || 'Commit';
-      const commitWidth   = Math.max(80, commitMessage.length * (fontSize * 0.6) + 20);
-      
-      svgContent += `
-        <g filter="url(#dropShadow)">
-          <rect x="${posX - commitWidth/2}" y="${posY - labelH/2}"
-                width="${commitWidth}" height="${labelH}"
-                fill="${COLORS.commitBg}" rx="${labelRx}"
-                stroke="#000000" stroke-width="0.5"/>
-          <text x="${posX}" y="${posY}" font-size="${fontSize}" font-family="Helvetica" font-weight="bold"
-                fill="${COLORS.commitText}" text-anchor="middle" dominant-baseline="middle">
-            ${commitMessage}
-          </text>
-        </g>
-      `;
-    }
+  commits.forEach(commit => {
+    if (!commit.position) return;
+    const { x: px, y: py } = tc(commit.position.x, commit.position.y);
+    const msg = commit.message || 'Commit';
+    c += labelPill(px, py, msg, COLORS.commitBg, COLORS.commitText, COLORS.commitText);
   });
 
-  return `<svg width="100%" height="100%" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">
-    ${svgDefs}
-    <g>${gridLines}</g>
-    <g>${svgContent}</g>
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+    ${defs}
+    <g clip-path="url(#clip)">${bg}</g>
+    <g clip-path="url(#clip)">${c}</g>
   </svg>`;
 };
 
-// ========== drawHeader ==========
-const drawHeader = (doc, pageWidth, y, headerInfo = null, logoBuffer = null) => {
-  const margin = 50;
-
-  const defaultInfo = {
-    name: 'COMMERCIAL ROOFERS PTY LTD',
+// ═════════════════════════════════════════════════════════════════════════════
+// PDF DRAWING HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+const drawHeader = (doc, pageWidth, y, headerInfo, logoBuffer) => {
+  const margin = PAGE_MARGIN;
+  const info   = headerInfo || {
+    name:    'COMMERCIAL ROOFERS PTY LTD',
     contact: 'info@commercialroofers.net.au | 0421259430',
-    tagline: 'Professional Roofing Solutions'
+    tagline: 'Professional Roofing Solutions',
   };
 
-  const info = headerInfo || defaultInfo;
-
-  doc.rect(0, 0, pageWidth, 80).fill('#FFFFFF');
-
-  doc.font(FONTS.title).fontSize(18).fillColor(COLORS.darkText).text(info.name, margin, 15);
-  doc.font(FONTS.body).fontSize(11).fillColor(COLORS.darkText).text(info.contact, margin, 40);
-  doc.font(FONTS.italic).fontSize(10).fillColor(COLORS.darkText).text(info.tagline, margin, 55);
+  doc.rect(0, 0, pageWidth, 82).fill('#ffffff');
+  doc.font(FONTS.title).fontSize(17).fillColor(COLORS.darkText).text(info.name, margin, 16);
+  doc.font(FONTS.body).fontSize(10).fillColor('#4b5563').text(info.contact, margin, 40);
+  doc.font(FONTS.italic).fontSize(10).fillColor('#6b7280').text(info.tagline, margin, 56);
 
   try {
-    if (logoBuffer) {
-      const logoHeight = 50;
-      const logoWidth = (doc.openImage(logoBuffer).width * logoHeight) / doc.openImage(logoBuffer).height;
-      doc.image(logoBuffer, pageWidth - margin - logoWidth, 15, { width: logoWidth, height: logoHeight });
-    } else {
-      const logo = doc.openImage(logoPath);
-      const logoHeight = 50;
-      const logoWidth = (logo.width * logoHeight) / logo.height;
-      doc.image(logo, pageWidth - margin - logoWidth, 15, { width: logoWidth, height: logoHeight });
-    }
-  } catch (err) {
-    console.warn('Failed to load logo:', err.message);
-  }
+    const src = logoBuffer || logoPath;
+    const logo = doc.openImage(src);
+    const lh = 48, lw = logo.width * lh / logo.height;
+    doc.image(src, pageWidth - margin - lw, 16, { width: lw, height: lh });
+  } catch (_) { /* no logo — skip */ }
 
-  doc.moveTo(margin, 75).lineTo(pageWidth - margin, 75)
-     .strokeColor(COLORS.border).dash(5, { space: 3 }).lineWidth(1).stroke();
+  doc.moveTo(margin, 76).lineTo(pageWidth - margin, 76)
+    .strokeColor(COLORS.secondary).lineWidth(1.5).undash().stroke();
 
-  return y + 85;
+  return 92;
 };
 
-// Helper function to draw section header
 const drawSectionHeader = (doc, text, y) => {
-  const margin = 50;
-  doc.rect(margin, y, doc.page.width - 2 * margin, 25).fill(COLORS.lightBg);
-  doc.rect(margin, y, 5, 25).fill(COLORS.secondary);
-  doc.font(FONTS.subtitle).fontSize(15).fillColor(COLORS.primary).text(text, margin + 15, y + 5);
-  return y + 35;
+  const margin = PAGE_MARGIN;
+  const pw     = doc.page.width;
+  doc.rect(margin, y, pw - 2 * margin, 26).fill(COLORS.lightBg);
+  doc.rect(margin, y, 4, 26).fill(COLORS.secondary);
+  doc.font(FONTS.subtitle).fontSize(13).fillColor(COLORS.primary)
+    .text(text, margin + 14, y + 6, { width: pw - 2 * margin - 14 });
+  return y + 34;
 };
 
-// Helper function to draw order details table
 const drawOrderDetailsTable = (doc, JobReference, Number, OrderContact, OrderDate, DeliveryAddress, y) => {
-  const margin = 50;
-  const pageWidth = doc.page.width;
-  const tableWidth = pageWidth - 2 * margin;
-  const rowHeight = 28;
-  const colWidth = tableWidth / 2;
+  const margin = PAGE_MARGIN;
+  const pw     = doc.page.width;
+  const tw     = pw - 2 * margin;
+  const rh     = 26;
 
-  doc.rect(margin, y, tableWidth, rowHeight).fill(COLORS.tableHeader);
-  doc.font(FONTS.tableHeader).fontSize(13).fillColor(COLORS.primary).text('ORDER DETAILS', margin + 10, y + 7);
-  y += rowHeight;
+  doc.rect(margin, y, tw, rh).fill(COLORS.tableHeader);
+  doc.font(FONTS.tableHeader).fontSize(12).fillColor(COLORS.primary)
+    .text('ORDER DETAILS', margin + 10, y + 7);
+  y += rh;
 
   const rows = [
-    ['JOB REFERENCE', JobReference],
-    ['PO NUMBER', Number],
-    ['ORDER CONTACT', OrderContact],
-    ['ORDER DATE', OrderDate],
-    ['DELIVERY ADDRESS', DeliveryAddress || 'PICKUP']
+    ['JOB REFERENCE',    JobReference],
+    ['PO NUMBER',        Number],
+    ['ORDER CONTACT',    OrderContact],
+    ['ORDER DATE',       OrderDate],
+    ['DELIVERY ADDRESS', DeliveryAddress || 'PICKUP'],
   ];
 
   rows.forEach(([label, value], i) => {
-    if (i % 2 === 0) {
-      doc.rect(margin, y, tableWidth, rowHeight).fill(COLORS.tableRow);
-    }
-    doc.circle(margin + 15, y + 14, 2).fill(COLORS.secondary);
-    doc.font(FONTS.tableHeader).fontSize(11).fillColor(COLORS.darkText).text(label, margin + 25, y + 8);
-    doc.font(FONTS.tableBody).fontSize(11).fillColor(COLORS.darkText).text(value, margin + colWidth, y + 8);
-    doc.moveTo(margin, y + rowHeight).lineTo(pageWidth - margin, y + rowHeight)
-       .strokeColor(COLORS.border).lineWidth(0.5).stroke();
-    y += rowHeight;
+    if (i % 2 === 0) doc.rect(margin, y, tw, rh).fill(COLORS.tableRow);
+    doc.circle(margin + 14, y + 13, 2).fill(COLORS.secondary);
+    doc.font(FONTS.tableHeader).fontSize(10).fillColor(COLORS.darkText).text(label, margin + 24, y + 8);
+    doc.font(FONTS.tableBody).fontSize(10).fillColor(COLORS.darkText).text(value, margin + tw / 2, y + 8);
+    doc.moveTo(margin, y + rh).lineTo(pw - margin, y + rh)
+      .strokeColor(COLORS.border).lineWidth(0.5).stroke();
+    y += rh;
   });
 
-  return y + 25;
+  return y + 20;
 };
 
-// Helper function to draw instructions
 const drawInstructions = (doc, y) => {
-  const margin = 50;
-  const pageWidth = doc.page.width;
+  const margin = PAGE_MARGIN;
+  const pw     = doc.page.width;
   y = drawSectionHeader(doc, 'IMPORTANT NOTES', y);
 
-  const instructions = [
+  const notes = [
     'Arrow points to the (solid) coloured side',
-    '90° and 45° degrees are not labelled',
-    'F = Total number of folds, each crush counts as 2 folds',
-    'End fold labels are positioned 20mm away from the diagram for better visibility',
+    '90° and 45° are not labelled',
+    'F = Total folds; each crush counts as 2 folds',
+    'End fold labels are positioned away from the diagram',
     'Green labels are commit points (annotations)',
-    'Red lines are reference lines (opposite lines)'
+    'Red lines are reference (opposite) lines',
   ];
 
-  instructions.forEach((instruction, index) => {
-    doc.font(FONTS.body).fontSize(11).fillColor(COLORS.secondary).text(`${index + 1}. `, margin, y);
-    doc.font(FONTS.body).fontSize(11).fillColor(COLORS.darkText)
-       .text(instruction, margin + 20, y, { width: pageWidth - 2 * margin - 20, align: 'left' });
-    y += 18;
+  notes.forEach((note, i) => {
+    doc.font(FONTS.body).fontSize(10).fillColor(COLORS.secondary)
+      .text(`${i + 1}.`, margin, y);
+    doc.font(FONTS.body).fontSize(10).fillColor(COLORS.darkText)
+      .text(note, margin + 18, y, { width: pw - 2 * margin - 18 });
+    y += 17;
   });
 
-  doc.rect(margin, y + 10, pageWidth - 2 * margin, 30).fill('#fee2e2');
-  doc.font(FONTS.subtitle).fontSize(12).fillColor(COLORS.accent)
-     .text('*** PLEASE WRITE ALL CODES ON FLASHINGS ***', margin, y + 18, {
-       width: pageWidth - 2 * margin, align: 'center'
-     });
-
-  return y + 50;
+  y += 6;
+  doc.rect(margin, y, pw - 2 * margin, 28).fill('#fee2e2');
+  doc.font(FONTS.subtitle).fontSize(11).fillColor(COLORS.accent)
+    .text('*** PLEASE WRITE ALL CODES ON FLASHINGS ***', margin, y + 8,
+      { width: pw - 2 * margin, align: 'center' });
+  return y + 42;
 };
 
-// Helper function to draw footer
 const drawFooter = (doc, pageWidth, pageHeight, pageNumber) => {
-  const margin = 50;
-  doc.moveTo(margin, pageHeight - 50).lineTo(pageWidth - margin, pageHeight - 50)
-     .strokeColor(COLORS.border).lineWidth(0.5).stroke();
-  doc.font(FONTS.body).fontSize(10).fillColor(COLORS.darkText)
-     .text(`Page ${pageNumber}`, 0, pageHeight - 30, { width: pageWidth, align: 'center' });
+  const margin = PAGE_MARGIN;
+  doc.moveTo(margin, pageHeight - 46).lineTo(pageWidth - margin, pageHeight - 46)
+    .strokeColor(COLORS.border).lineWidth(0.5).stroke();
+  doc.font(FONTS.body).fontSize(9).fillColor('#9ca3af')
+    .text(`Page ${pageNumber}`, 0, pageHeight - 28, { width: pageWidth, align: 'center' });
 };
 
-// Draw property table below each diagram
-const drawDiagramPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex) => {
-  const tableWidth  = 230;
-  const minRowHeight = 24;
-  const colWidths   = [20, 90, 40, 30, 50];
-  const headerFontSize = 10;
-  const fontSize    = 12;
-  const headers     = ['', 'Colour/Material', 'CODE', 'F', 'GIRTH'];
+const drawPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex, tableWidth) => {
+  const rh = 20, fhdr = 8.5, fbody = 9.5;
 
-  const totalFolds  = calculateTotalFolds(pathData).toString();
-  const girth       = `${calculateGirth(pathData)}mm`;
-  const color       = pathData.color || 'Shale Grey';
-  const code        = (pathData.code || '').replace(/\D/g, '');
-  const num         = (pathIndex + 1).toString();
+  const colRatios = [0.07, 0.36, 0.20, 0.11, 0.26];
+  const cw = colRatios.map(r => Math.floor(r * tableWidth));
+  cw[cw.length - 1] += tableWidth - cw.reduce((a, b) => a + b, 0);
 
-  const row    = [num, color, code, totalFolds, girth];
-  const aligns = ['center', 'left', 'center', 'center', 'center'];
+  const headers = ['#', 'Colour', 'CODE', 'F', 'GIRTH'];
+  const totalFolds = calcTotalFolds(pathData).toString();
+  const girth      = `${calcGirth(pathData)}mm`;
+  const color      = pathData.color || 'Shale Grey';
+  const code       = (pathData.code || '').replace(/\D/g, '');
+  const row        = [(pathIndex + 1).toString(), color, code, totalFolds, girth];
+  const aligns     = ['center', 'left', 'center', 'center', 'center'];
 
-  let currentY = y;
+  let cy = y;
 
-  doc.font(FONTS.tableHeader).fontSize(headerFontSize).fillColor(COLORS.darkText);
-  let currentX = x;
+  // Header row
+  doc.rect(x, cy, tableWidth, rh).fill(COLORS.tableHeader);
+  doc.font(FONTS.tableHeader).fontSize(fhdr).fillColor(COLORS.darkText);
+  let cx = x;
   headers.forEach((h, i) => {
-    doc.text(h, currentX + 2, currentY + (minRowHeight / 4), {width: colWidths[i] - 4, align: 'center'});
-    currentX += colWidths[i];
+    doc.text(h, cx + 2, cy + (rh - fhdr) / 2, { width: cw[i] - 4, align: 'center' });
+    cx += cw[i];
   });
-  const headerRowHeight = minRowHeight;
-  currentY += headerRowHeight;
+  cy += rh;
 
-  let dataMaxH = 0;
-  doc.font(FONTS.tableBody).fontSize(fontSize);
-  row.forEach((val, i) => {
-    const h = doc.heightOfString(val, {width: colWidths[i]-4, align: aligns[i], paragraphGap: 0, lineGap: 0});
-    dataMaxH = Math.max(dataMaxH, h);
-  });
-  const dataRowHeight = Math.max(minRowHeight, dataMaxH + 4);
-
-  currentX = x;
-  row.forEach((val, i) => {
+  // Data row
+  doc.font(FONTS.tableBody).fontSize(fbody);
+  let maxH = 0;
+  row.forEach((v, i) => { maxH = Math.max(maxH, doc.heightOfString(v, { width: cw[i] - 4 })); });
+  const drh = Math.max(rh, maxH + 4);
+  doc.rect(x, cy, tableWidth, drh).fill('#ffffff');
+  cx = x;
+  row.forEach((v, i) => {
     doc.fillColor(i === 2 ? COLORS.accent : COLORS.darkText);
-    const opt = {width: colWidths[i]-4, align: aligns[i], paragraphGap: 0, lineGap: 0};
-    const textHeight = doc.heightOfString(val, opt);
-    const textY = currentY + (dataRowHeight - textHeight) / 2;
-    doc.text(val, currentX + 2, textY, opt);
-    currentX += colWidths[i];
+    const opt = { width: cw[i] - 4, align: aligns[i], paragraphGap: 0, lineGap: 0 };
+    const th  = doc.heightOfString(v, opt);
+    doc.text(v, cx + 2, cy + (drh - th) / 2, opt);
+    cx += cw[i];
   });
   doc.fillColor(COLORS.darkText);
-  currentY += dataRowHeight;
+  cy += drh;
 
+  // Borders
   doc.lineWidth(0.5).strokeColor(COLORS.border);
   doc.moveTo(x, y).lineTo(x + tableWidth, y).stroke();
-  doc.moveTo(x, y + headerRowHeight).lineTo(x + tableWidth, y + headerRowHeight).stroke();
-  doc.moveTo(x, currentY).lineTo(x + tableWidth, currentY).stroke();
-  currentX = x;
-  for (let i = 0; i <= colWidths.length; i++) {
-    doc.moveTo(currentX, y).lineTo(currentX, currentY).stroke();
-    if (i < colWidths.length) currentX += colWidths[i];
+  doc.moveTo(x, y + rh).lineTo(x + tableWidth, y + rh).stroke();
+  doc.moveTo(x, cy).lineTo(x + tableWidth, cy).stroke();
+  cx = x;
+  for (let i = 0; i <= cw.length; i++) {
+    doc.moveTo(cx, y).lineTo(cx, cy).stroke();
+    if (i < cw.length) cx += cw[i];
   }
 
   const qxlStr = formatQxL(qxlGroup);
-  let totalM = 0;
+  let totalM   = 0;
   qxlGroup.forEach(item => { totalM += item.quantity * parseFloat(item.length) / 1000; });
-  const totalStr = totalM.toFixed(1);
+  doc.font(FONTS.body).fontSize(8.5).fillColor(COLORS.darkText);
+  const qText = `Q x L: ${qxlStr}`;
+  const qh    = doc.heightOfString(qText, { width: tableWidth - 55 });
+  doc.text(qText, x, cy + 3, { width: tableWidth - 55 });
+  doc.text(`T - ${totalM.toFixed(1)}m`, x + tableWidth - 55, cy + 3, { align: 'right', width: 55 });
+  cy += Math.max(14, qh + 4);
 
-  doc.font(FONTS.body).fontSize(11).fillColor(COLORS.darkText);
-  const qxlWidth = tableWidth - 60;
-  const qxlOpt   = {width: qxlWidth, paragraphGap: 0, lineGap: 0};
-  const qxlText  = `Q x L ${qxlStr}`;
-  const qxlH     = doc.heightOfString(qxlText, qxlOpt);
-  const belowY   = currentY + 5;
-  doc.text(qxlText, x, belowY, qxlOpt);
-  doc.text(`T - ${totalStr}`, x + tableWidth - 60, belowY, { align: 'right', width: 60 });
-
-  const belowHeight = Math.max(20, qxlH + 5);
-  currentY += belowHeight;
-
-  return currentY;
+  return cy;
 };
 
-// Helper function to draw summary table
-const drawSummaryTable = (doc, validPaths, groupedQuantitiesAndLengths, y, headerInfo, logoBuffer) => {
-  const margin = 50;
-  const pageWidth  = doc.page.width;
-  const pageHeight = doc.page.height;
+const drawSummaryTable = (doc, validPaths, grouped, y, headerInfo, logoBuffer, jobReference) => {
+  const margin  = PAGE_MARGIN;
+  const pw      = doc.page.width;
+  const ph      = doc.page.height;
   y = drawSectionHeader(doc, 'ORDER SUMMARY', y);
 
   const headers   = ['#', 'Colour', 'Code', 'F', 'GIRTH', 'Q x L'];
-  const colWidths = [25, 90, 60, 30, 60, 140];
-  const minRowHeight = 22;
-  const padding   = 12;
+  const colWidths = [25, 90, 60, 30, 60, pw - 2 * margin - 265];
+  const minRH     = 22;
+  const pad       = 10;
 
-  doc.font(FONTS.tableHeader).fontSize(11);
-  let headerMaxHeight = 0;
-  headers.forEach((h, i) => {
-    const hHeight = doc.heightOfString(h, { width: colWidths[i] - 10, align: 'center' });
-    if (hHeight > headerMaxHeight) headerMaxHeight = hHeight;
-  });
-  const headerHeight = headerMaxHeight + padding;
-  doc.rect(margin, y, pageWidth - 2 * margin, headerHeight).fill(COLORS.tableHeader);
-  doc.fillColor(COLORS.primary);
-  let xPos = margin;
-  headers.forEach((h, i) => {
-    const cellWidth  = colWidths[i] - 10;
-    const textHeight = doc.heightOfString(h, { width: cellWidth, align: 'center' });
-    const textY      = y + (headerHeight - textHeight) / 2;
-    doc.text(h, xPos + 5, textY, { width: cellWidth, align: 'center' });
-    xPos += colWidths[i];
-  });
-  y += headerHeight;
-
-  doc.font(FONTS.tableBody).fontSize(10);
-  let totalF = 0, totalG = 0;
-  validPaths.forEach((path, index) => {
-    const pathQuantitiesAndLengths = groupedQuantitiesAndLengths[index] || [];
-    const qxL        = formatQxL(pathQuantitiesAndLengths);
-    const totalFolds = calculateTotalFolds(path);
-    
-    // UPDATED GIRTH LOGIC (per-row)
-    const rawGirth   = parseFloat(calculateGirth(path));
-    const girth      = Math.round(rawGirth);           // ensure integer mm for display
-    totalF += totalFolds;
-    totalG += rawGirth;                                // keep accumulation as float
-
-    const code = (path.code || '').replace(/\D/g, '') || '';
-    const row  = [
-      `${index + 1}`,
-      path.color || 'N/A',
-      code,
-      totalFolds.toString(),
-      `${girth}mm`,                                    // now always integer
-      qxL || 'N/A'
-    ];
-
-    let maxHeight = 0;
-    row.forEach((val, i) => {
-      const h = doc.heightOfString(val, { width: colWidths[i] - 10, align: 'center' });
-      if (h > maxHeight) maxHeight = h;
-    });
-    const rowHeight = Math.max(minRowHeight, maxHeight + padding);
-
-    if (index % 2 === 0) {
-      doc.rect(margin, y, pageWidth - 2 * margin, rowHeight).fill(COLORS.tableRow);
-    }
-
-    xPos = margin;
-    row.forEach((val, i) => {
-      const cellWidth  = colWidths[i] - 10;
-      const textHeight = doc.heightOfString(val, { width: cellWidth, align: 'center' });
-      const textY      = y + (rowHeight - textHeight) / 2;
-      const align      = (i === 0 || i === 3 || i === 4) ? 'center' : 'left';
-      doc.fillColor(i === 2 ? COLORS.accent : COLORS.darkText);
-      doc.text(val, xPos + 5, textY, { width: cellWidth, align });
-      xPos += colWidths[i];
-    });
-
-    doc.moveTo(margin, y + rowHeight).lineTo(pageWidth - margin, y + rowHeight)
-       .strokeColor(COLORS.border).lineWidth(0.5).stroke();
-    y += rowHeight;
-
-    if (y + minRowHeight > pageHeight - 80) {
-      doc.addPage();
-      y = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
-      y = drawSectionHeader(doc, 'ORDER SUMMARY (CONTINUED)', y);
-      doc.rect(margin, y, pageWidth - 2 * margin, headerHeight).fill(COLORS.tableHeader);
-      doc.font(FONTS.tableHeader).fontSize(11).fillColor(COLORS.primary);
-      xPos = margin;
-      headers.forEach((h, i) => {
-        const cellWidth  = colWidths[i] - 10;
-        const textHeight = doc.heightOfString(h, { width: cellWidth, align: 'center' });
-        const textY      = y + (headerHeight - textHeight) / 2;
-        doc.text(h, xPos + 5, textY, { width: cellWidth, align: 'center' });
-        xPos += colWidths[i];
-      });
-      y += headerHeight;
-    }
-  });
-
-  if (y + minRowHeight > pageHeight - 80) {
-    doc.addPage();
-    y = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
-    y = drawSectionHeader(doc, 'ORDER SUMMARY (CONTINUED)', y);
-    doc.rect(margin, y, pageWidth - 2 * margin, headerHeight).fill(COLORS.tableHeader);
-    doc.font(FONTS.tableHeader).fontSize(11).fillColor(COLORS.primary);
-    xPos = margin;
+  const drawSumHeader = (y2) => {
+    doc.font(FONTS.tableHeader).fontSize(10);
+    let hmax = 0;
+    headers.forEach((h, i) => { hmax = Math.max(hmax, doc.heightOfString(h, { width: colWidths[i] - 10 })); });
+    const hh = hmax + pad;
+    doc.rect(margin, y2, pw - 2 * margin, hh).fill(COLORS.tableHeader);
+    doc.font(FONTS.tableHeader).fontSize(10).fillColor(COLORS.primary);
+    let xp = margin;
     headers.forEach((h, i) => {
-      const cellWidth  = colWidths[i] - 10;
-      const textHeight = doc.heightOfString(h, { width: cellWidth, align: 'center' });
-      const textY      = y + (headerHeight - textHeight) / 2;
-      doc.text(h, xPos + 5, textY, { width: cellWidth, align: 'center' });
-      xPos += colWidths[i];
+      const th = doc.heightOfString(h, { width: colWidths[i] - 10 });
+      doc.text(h, xp + 5, y2 + (hh - th) / 2, { width: colWidths[i] - 10, align: 'center' });
+      xp += colWidths[i];
     });
-    y += headerHeight;
-  }
+    return y2 + hh;
+  };
 
-  // UPDATED TOTAL GIRTH (rounded integer)
-  const totalGirthInt = Math.round(totalG);
+  y = drawSumHeader(y);
 
-  doc.font(FONTS.tableHeader).fontSize(11);
-  const totalsRow = ['', 'Totals', '', totalF.toString(), `${totalGirthInt}mm`, ''];
-  let totalsMaxHeight = 0;
-  totalsRow.forEach((val, i) => {
-    const h = doc.heightOfString(val, { width: colWidths[i] - 10, align: 'center' });
-    if (h > totalsMaxHeight) totalsMaxHeight = h;
+  let totF = 0, totG = 0;
+
+  validPaths.forEach((path, idx) => {
+    const qxL      = formatQxL(grouped[idx] || []);
+    const folds    = calcTotalFolds(path);
+    const rawGirth = parseFloat(calcGirth(path));
+    const girth    = Math.round(rawGirth);
+    totF += folds; totG += rawGirth;
+    const code = (path.code || '').replace(/\D/g, '');
+    const row  = [`${idx + 1}`, path.color || 'N/A', code, folds.toString(), `${girth}mm`, qxL || 'N/A'];
+
+    doc.font(FONTS.tableBody).fontSize(9.5);
+    let maxH = 0;
+    row.forEach((v, i) => { maxH = Math.max(maxH, doc.heightOfString(v, { width: colWidths[i] - 10 })); });
+    const rh = Math.max(minRH, maxH + pad);
+
+    if (idx % 2 === 0) doc.rect(margin, y, pw - 2 * margin, rh).fill(COLORS.tableRow);
+
+    let xp = margin;
+    row.forEach((v, i) => {
+      const aln = (i === 0 || i === 3 || i === 4) ? 'center' : 'left';
+      const th  = doc.heightOfString(v, { width: colWidths[i] - 10 });
+      doc.fillColor(i === 2 ? COLORS.accent : COLORS.darkText);
+      doc.text(v, xp + 5, y + (rh - th) / 2, { width: colWidths[i] - 10, align: aln });
+      xp += colWidths[i];
+    });
+
+    doc.moveTo(margin, y + rh).lineTo(pw - margin, y + rh)
+      .strokeColor(COLORS.border).lineWidth(0.5).stroke();
+    y += rh;
+
+    if (y + minRH > ph - 80) {
+      doc.addPage();
+      y = 20;
+      y = drawSectionHeader(doc, 'ORDER SUMMARY (CONTINUED)', y);
+      y = drawSumHeader(y);
+    }
   });
-  const totalsRowHeight = Math.max(minRowHeight, totalsMaxHeight + padding);
-  doc.rect(margin, y, pageWidth - 2 * margin, totalsRowHeight).fill(COLORS.tableHeader);
+
+  const totRow = ['', 'Totals', '', totF.toString(), `${Math.round(totG)}mm`, ''];
+  let tmH = 0;
+  totRow.forEach((v, i) => { tmH = Math.max(tmH, doc.heightOfString(v, { width: colWidths[i] - 10 })); });
+  const trh = Math.max(minRH, tmH + pad);
+  doc.rect(margin, y, pw - 2 * margin, trh).fill(COLORS.tableHeader);
   doc.fillColor(COLORS.primary);
-  xPos = margin;
-  totalsRow.forEach((val, i) => {
-    const cellWidth  = colWidths[i] - 10;
-    const textHeight = doc.heightOfString(val, { width: cellWidth, align: 'center' });
-    const textY      = y + (totalsRowHeight - textHeight) / 2;
-    const align      = (i === 0 || i === 3 || i === 4) ? 'center' : 'left';
-    doc.text(val, xPos + 5, textY, { width: cellWidth, align });
-    xPos += colWidths[i];
+  let xp = margin;
+  totRow.forEach((v, i) => {
+    const aln = (i === 0 || i === 3 || i === 4) ? 'center' : 'left';
+    const th  = doc.heightOfString(v, { width: colWidths[i] - 10 });
+    doc.text(v, xp + 5, y + (trh - th) / 2, { width: colWidths[i] - 10, align: aln });
+    xp += colWidths[i];
   });
 
-  return y + totalsRowHeight + 25;
+  return y + trh + 25;
 };
 
+// ═════════════════════════════════════════════════════════════════════════════
+// MAIN CONTROLLER
+// ═════════════════════════════════════════════════════════════════════════════
 export const generatePdfDownload = async (req, res) => {
   try {
-    const { selectedProjectData, JobReference, Number, OrderContact, OrderDate, DeliveryAddress, PickupNotes, Notes, AdditionalItems } = req.body;
-    console.dir(selectedProjectData, { depth: null });
+    const {
+      selectedProjectData, JobReference, Number, OrderContact,
+      OrderDate, DeliveryAddress, PickupNotes, Notes, AdditionalItems,
+    } = req.body;
+
     const { userId } = req.params;
 
-    if (!JobReference || !Number || !OrderContact || !OrderDate) {
+    console.log("data", JSON.stringify(selectedProjectData, null, 2));
+    if (!JobReference || !Number || !OrderContact || !OrderDate)
       return res.status(400).json({ message: 'JobReference, Number, OrderContact, and OrderDate are required' });
-    }
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId))
       return res.status(400).json({ message: 'Valid userId is required' });
-    }
-    if (!uploadsDir) {
-      return res.status(500).json({ message: 'Uploads directory is not defined' });
-    }
 
     const QuantitiesAndLengths = selectedProjectData?.QuantitiesAndLengths || [];
-    if (!Array.isArray(QuantitiesAndLengths) || QuantitiesAndLengths.length === 0) {
+    if (!Array.isArray(QuantitiesAndLengths) || QuantitiesAndLengths.length === 0)
       return res.status(400).json({ message: 'QuantitiesAndLengths must be a non-empty array' });
-    }
-    for (const item of QuantitiesAndLengths) {
-      if (!item.quantity || !item.length || isNaN(parseFloat(item.quantity)) || isNaN(parseFloat(item.length))) {
-        return res.status(400).json({ message: 'Each QuantitiesAndLengths item must have valid numeric quantity and length' });
-      }
-    }
 
-    const additionalItemsText = AdditionalItems || '';
+    for (const item of QuantitiesAndLengths) {
+      if (!item.quantity || !item.length || isNaN(parseFloat(item.quantity)) || isNaN(parseFloat(item.length)))
+        return res.status(400).json({ message: 'Each QuantitiesAndLengths item must have valid numeric quantity and length' });
+    }
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    let logoBuffer = null;
-    let headerInfo = null;
-
+    let logoBuffer = null, headerInfo = null;
     if (user.company) {
       try {
         const company = await CompanyList.findOne({ userId: user._id });
         if (company) {
-          if (company.companyImage && company.companyImage.length > 0) {
-            const imageUrl = company.companyImage[0].url;
-            const response = await fetch(imageUrl);
-            if (response.ok) {
-              const arrayBuffer = await response.arrayBuffer();
-              logoBuffer = Buffer.from(arrayBuffer);
-            } else {
-              console.warn(`Failed to fetch company image, status: ${response.status}`);
-            }
+          if (company.companyImage?.length > 0) {
+            const r = await fetch(company.companyImage[0].url);
+            if (r.ok) logoBuffer = Buffer.from(await r.arrayBuffer());
           }
-          const contactEmail = user.email || 'info@commercialroofers.net.au';
-          const phone = company.phone ? ` | ${company.phone}` : '';
           headerInfo = {
-            name: company.companyName || 'COMMERCIAL ROOFERS PTY LTD',
-            contact: contactEmail + phone,
-            tagline: 'Professional Roofing Solutions'
+            name:    company.companyName || 'COMMERCIAL ROOFERS PTY LTD',
+            contact: `${user.email || 'info@commercialroofers.net.au'}${company.phone ? ` | ${company.phone}` : ''}`,
+            tagline: 'Professional Roofing Solutions',
           };
         }
-      } catch (err) {
-        console.warn('Error fetching company details:', err.message);
-      }
+      } catch (_) { /* fallback */ }
     }
-
-    if (!headerInfo) {
-      headerInfo = {
-        name: 'COMMERCIAL ROOFERS PTY LTD',
-        contact: 'info@commercialroofers.net.au | 0421259430',
-        tagline: 'Professional Roofing Solutions'
-      };
-    }
+    headerInfo = headerInfo || {
+      name:    'COMMERCIAL ROOFERS PTY LTD',
+      contact: 'info@commercialroofers.net.au | 0421259430',
+      tagline: 'Professional Roofing Solutions',
+    };
 
     let projectData;
     try {
-      projectData = typeof selectedProjectData === 'string' ? JSON.parse(selectedProjectData) : selectedProjectData;
+      projectData = typeof selectedProjectData === 'string'
+        ? JSON.parse(selectedProjectData)
+        : selectedProjectData;
       if (!projectData?.paths?.length) throw new Error('No valid paths');
-    } catch (error) {
+    } catch {
       return res.status(400).json({ message: 'Invalid project data' });
     }
+
+    // Project-level defaults (fallback)
+    const projShowOppositeLines = projectData.showOppositeLines || false;
+    const projOppositeLinesDirection = projectData.oppositeLinesDirection || 'far';
 
     const scale                  = parseFloat(projectData.scale) || 1;
     const showBorder             = projectData.showBorder || false;
     const borderOffsetDirection  = projectData.borderOffsetDirection || 'inside';
     const labelPositions         = projectData.labelPositions || {};
-    const showOppositeLines      = projectData.showOppositeLines || false;
-    const oppositeLinesDirection = projectData.oppositeLinesDirection || 'far';
     const commits                = projectData.commits || [];
 
-    const validPaths = projectData.paths.filter(path => validatePoints(path.points));
-    if (validPaths.length === 0) {
+    const validPaths = projectData.paths.filter(p => validatePoints(p.points));
+    if (validPaths.length === 0)
       return res.status(400).json({ message: 'No valid paths found in project data' });
-    }
 
     const itemsPerPath = Math.ceil(QuantitiesAndLengths.length / validPaths.length);
-    const groupedQuantitiesAndLengths = [];
-    for (let i = 0; i < validPaths.length; i++) {
-      const startIndex = i * itemsPerPath;
-      const endIndex   = Math.min(startIndex + itemsPerPath, QuantitiesAndLengths.length);
-      groupedQuantitiesAndLengths.push(QuantitiesAndLengths.slice(startIndex, endIndex));
-    }
+    const grouped      = validPaths.map((_, i) =>
+      QuantitiesAndLengths.slice(
+        i * itemsPerPath,
+        Math.min((i + 1) * itemsPerPath, QuantitiesAndLengths.length)
+      )
+    );
 
     const doc = new PDFDocument({
-      size: 'A4',
+      size:       'A4',
       bufferPages: true,
-      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      margins:    { top: 0, bottom: 0, left: 0, right: 0 },
       info: {
-        Title: `Flashing Order - ${JobReference}`,
-        Author: 'Commercial Roofers Pty Ltd',
-        Creator: 'Flash.it Roofing App',
+        Title:        `Flashing Order - ${JobReference}`,
+        Author:       'Commercial Roofers Pty Ltd',
+        Creator:      'Flash.it Roofing App',
         CreationDate: new Date(),
       },
-      autoFirstPage: false
+      autoFirstPage: false,
     });
 
-    const timestamp  = Date.now();
-    const pdfPath    = path.join(uploadsDir, `project-${timestamp}.pdf`);
+    const timestamp   = Date.now();
+    const pdfPath     = path.join(uploadsDir, `project-${timestamp}.pdf`);
     const writeStream = fs.createWriteStream(pdfPath);
     doc.pipe(writeStream);
 
-    const margin  = 50;
-    const imgSize = 240;
-    const gap     = 15;
+    const pageWidth  = 595;
+    const pageHeight = 842;
 
+    const colW  = CELL_WIDTH;
+    const colXs = Array.from({ length: COLS }, (_, c) => PAGE_MARGIN + c * (colW + COL_GUTTER));
+
+    // ─── Render one diagram cell (uses per‑path flags) ────────────────────────
+    const renderCell = async (pathIndex, colX, yPos, imgH, compact) => {
+      try {
+        const pd = validPaths[pathIndex];
+
+        // 🟢 Use path‑specific flags, fallback to project defaults
+        const pathShowOppositeLines = pd.showOppositeLines ?? projShowOppositeLines;
+        const pathOppositeLinesDir = pd.oppositeLinesDirection ?? projOppositeLinesDirection ?? 'far';
+
+        const bounds = calculateBounds(
+          pd, scale, showBorder, borderOffsetDirection,
+          labelPositions, commits, pathShowOppositeLines, pathOppositeLinesDir
+        );
+        const svg = generateSvg(
+          pd, bounds, scale, showBorder, borderOffsetDirection,
+          labelPositions, commits, pathShowOppositeLines, pathOppositeLinesDir,
+          SVG_PX
+        );
+
+        const imgBuf = await sharp(Buffer.from(svg))
+          .resize({ width: SVG_PX, height: SVG_PX, fit: 'fill' })
+          .png({ quality: 100, compressionLevel: 6 })
+          .toBuffer();
+
+        const tableEndY = drawPropertyTable(doc, colX, yPos, pd, grouped[pathIndex], pathIndex, colW);
+
+        doc.image(imgBuf, colX, tableEndY, { width: colW, height: imgH });
+
+        const cellH = (tableEndY - yPos) + imgH;
+        doc.rect(colX, yPos, colW, cellH).lineWidth(0.7).strokeColor(COLORS.border).stroke();
+        doc.moveTo(colX, tableEndY).lineTo(colX + colW, tableEndY)
+          .lineWidth(0.4).strokeColor(COLORS.border).stroke();
+
+      } catch (err) {
+        console.warn(`Render error path ${pathIndex}:`, err.message);
+        doc.font(FONTS.body).fontSize(11).fillColor(COLORS.darkText)
+          .text('Diagram unavailable', colX, yPos + 10);
+      }
+    };
+
+    // ─── PAGE 1 ───────────────────────────────────────────────────────────────
     doc.addPage();
-    const pageWidth  = doc.page.width;
-    const pageHeight = doc.page.height;
 
     let y = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
+    y     = drawOrderDetailsTable(doc, JobReference, user.phoneNumber || Number, user.username || OrderContact, OrderDate, DeliveryAddress || PickupNotes, y);
+    y     = drawInstructions(doc, y);
 
-    const poNumber    = user.phoneNumber || Number;
-    const orderContact = user.username  || OrderContact;
+    const firstPageCount = Math.min(PER_PAGE_FIRST, validPaths.length);
+    const remainingCount = validPaths.length - firstPageCount;
+    const remainingPages = Math.ceil(remainingCount / PER_PAGE_OTHER);
 
-    y = drawOrderDetailsTable(doc, JobReference, poNumber, orderContact, OrderDate, DeliveryAddress || PickupNotes, y);
-    y = drawInstructions(doc, y);
-
-    const firstPageMaxPaths      = 2;
-    const remainingPathsPerPage  = 4;
-    const firstPagePaths         = Math.min(firstPageMaxPaths, validPaths.length);
-    const remainingPathsCount    = validPaths.length - firstPagePaths;
-    const remainingPagesNeeded   = Math.ceil(remainingPathsCount / remainingPathsPerPage);
-    const imagePageCount         = (firstPagePaths > 0 ? 1 : 0) + remainingPagesNeeded;
-    let   imagePart              = 1;
-
-    const pathsPerRow       = 2;
-    const tableHeightApprox = 68;
-
-    if (firstPagePaths > 0) {
-      y = drawSectionHeader(doc, `FLASHING DETAILS - PART ${imagePart++} OF ${imagePageCount}`, y);
-      const startX = margin;
-      const startY = y;
-
-      for (let i = 0; i < firstPagePaths; i++) {
-        const row = Math.floor(i / pathsPerRow);
-        const col = i % pathsPerRow;
-        const x   = margin + col * (imgSize + gap);
-        const yPos = startY + row * (imgSize + tableHeightApprox);
-
-        try {
-          const pathData  = validPaths[i];
-          const bounds    = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
-          const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
-
-          const imageBuffer = await sharp(Buffer.from(svgString))
-            .resize({
-              width: imgSize * 4,
-              height: imgSize * 4,
-              fit: 'contain',
-              background: { r: 255, g: 255, b: 255, alpha: 1 },
-            })
-            .png({ quality: 100, compressionLevel: 9, effort: 10, palette: true })
-            .toBuffer();
-
-          const img  = doc.openImage(imageBuffer);
-          const imgW = imgSize;
-          const imgH = (img.height * imgW) / img.width;
-
-          const tableY   = yPos;
-          const tableX   = x + (imgSize - 230) / 2;
-          const tableEndY = drawDiagramPropertyTable(doc, tableX, tableY, pathData, groupedQuantitiesAndLengths[i], i);
-
-          const imageY = tableEndY;
-          doc.image(imageBuffer, x, imageY, { width: imgW, height: imgH });
-
-          const framePadding = 5;
-          const frameX = Math.min(x, tableX) - framePadding;
-          const frameY = yPos - framePadding;
-          const frameWidth  = Math.max(imgW, 230) + 2 * framePadding;
-          const frameHeight = (tableEndY - tableY) + imgH + 2 * framePadding;
-          doc.rect(frameX, frameY, frameWidth, frameHeight).lineWidth(0.5).strokeColor(COLORS.border).stroke();
-
-        } catch (err) {
-          console.warn(`Image error (path ${i}):`, err.message);
-          doc.font('Helvetica').fontSize(14).text(`Image unavailable`, x, yPos);
-        }
-      }
-      const rowsCount = Math.ceil(firstPagePaths / pathsPerRow);
-      y = startY + rowsCount * (imgSize + tableHeightApprox);
+    for (let i = 0; i < firstPageCount; i++) {
+      const col  = i % COLS;
+      const row  = Math.floor(i / COLS);
+      const xPos = colXs[col];
+      const yPos = y + row * ROW_STRIDE_FIRST;
+      await renderCell(i, xPos, yPos, IMG_H_FIRST, false);
     }
 
-    if (remainingPathsCount > 0) {
-      for (let pageIndex = 0; pageIndex < remainingPagesNeeded; pageIndex++) {
-        doc.addPage();
-        y = drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer);
-        y = drawSectionHeader(doc, `FLASHING DETAILS - PART ${imagePart++} OF ${imagePageCount}`, y);
-
-        const startPath    = firstPagePaths + pageIndex * remainingPathsPerPage;
-        const endPath      = Math.min(startPath + remainingPathsPerPage, validPaths.length);
-        const pathsThisPage = endPath - startPath;
-        const startX       = margin;
-        const startY       = y;
-
-        for (let j = 0; j < pathsThisPage; j++) {
-          const i    = startPath + j;
-          const row  = Math.floor(j / pathsPerRow);
-          const col  = j % pathsPerRow;
-          const x    = startX + col * (imgSize + gap);
-          const yPos = startY + row * (imgSize + tableHeightApprox);
-
-          try {
-            const pathData  = validPaths[i];
-            const bounds    = calculateBounds(pathData, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
-            const svgString = generateSvgString(pathData, bounds, scale, showBorder, borderOffsetDirection, labelPositions, commits, showOppositeLines, oppositeLinesDirection);
-
-            const imageBuffer = await sharp(Buffer.from(svgString))
-              .resize({
-                width: imgSize * 4,
-                height: imgSize * 4,
-                fit: 'contain',
-                background: { r: 255, g: 255, b: 255, alpha: 1 },
-              })
-              .png({ quality: 100, compressionLevel: 9, effort: 10, palette: true })
-              .toBuffer();
-
-            const img  = doc.openImage(imageBuffer);
-            const imgW = imgSize;
-            const imgH = (img.height * imgW) / img.width;
-
-            const tableY    = yPos;
-            const tableX    = x + (imgSize - 230) / 2;
-            const tableEndY = drawDiagramPropertyTable(doc, tableX, tableY, pathData, groupedQuantitiesAndLengths[i], i);
-
-            const imageY = tableEndY;
-            doc.image(imageBuffer, x, imageY, { width: imgW, height: imgH });
-
-            const framePadding = 5;
-            const frameX = Math.min(x, tableX) - framePadding;
-            const frameY = yPos - framePadding;
-            const frameWidth  = Math.max(imgW, 230) + 2 * framePadding;
-            const frameHeight = (tableEndY - tableY) + imgH + 2 * framePadding;
-            doc.rect(frameX, frameY, frameWidth, frameHeight).lineWidth(0.5).strokeColor(COLORS.border).stroke();
-
-          } catch (err) {
-            console.warn(`Image error (path ${i}):`, err.message);
-            doc.font('Helvetica').fontSize(14).text(`Image unavailable`, x, yPos);
-          }
-        }
-        const rowsCount = Math.ceil(pathsThisPage / pathsPerRow);
-        y = startY + rowsCount * (imgSize + tableHeightApprox);
-      }
-    }
-
-    let lastDiagramsCount = firstPagePaths;
-    if (remainingPathsCount > 0) {
-      lastDiagramsCount = remainingPathsCount % remainingPathsPerPage;
-      if (lastDiagramsCount === 0) lastDiagramsCount = remainingPathsPerPage;
-    }
-
-    let addedNewPageForSummary = false;
-    if (lastDiagramsCount <= 2) {
+    // ─── PAGE 2+ ───────────────────────────────────────────────────────────────
+    for (let pageIdx = 0; pageIdx < remainingPages; pageIdx++) {
       doc.addPage();
-      addedNewPageForSummary = true;
+
+      const startY   = 20;
+      const startIdx = firstPageCount + pageIdx * PER_PAGE_OTHER;
+      const endIdx   = Math.min(startIdx + PER_PAGE_OTHER, validPaths.length);
+
+      for (let j = 0; j < endIdx - startIdx; j++) {
+        const pathIdx = startIdx + j;
+        const col     = j % COLS;
+        const row     = Math.floor(j / COLS);
+        const xPos    = colXs[col];
+        const yPos    = startY + row * ROW_STRIDE_OTHER;
+        await renderCell(pathIdx, xPos, yPos, IMG_H_OTHER, true);
+      }
     }
-    y = addedNewPageForSummary ? drawHeader(doc, pageWidth, 0, headerInfo, logoBuffer) : y;
 
-    // Pass headerInfo and logoBuffer so summary pagination works correctly
-    y = drawSummaryTable(doc, validPaths, groupedQuantitiesAndLengths, y, headerInfo, logoBuffer);
+    // ─── SUMMARY PAGE ──────────────────────────────────────────────────────────
+    doc.addPage();
+    drawSummaryTable(doc, validPaths, grouped, 20, headerInfo, logoBuffer, JobReference);
 
+    // ─── Footers ───────────────────────────────────────────────────────────────
     const pages = doc.bufferedPageRange();
     for (let i = 0; i < pages.count; i++) {
       doc.switchToPage(i);
@@ -1462,49 +985,40 @@ export const generatePdfDownload = async (req, res) => {
 
     doc.flushPages();
     doc.end();
-
     await new Promise((resolve, reject) => {
       writeStream.on('finish', resolve);
       writeStream.on('error', reject);
     });
 
     const exists = await fsPromises.access(pdfPath).then(() => true).catch(() => false);
-    if (!exists) {
-      return res.status(500).json({ message: 'PDF file not generated' });
-    }
+    if (!exists) return res.status(500).json({ message: 'PDF file not generated' });
 
     let uploadResult;
     try {
       uploadResult = await cloudinary.uploader.upload(pdfPath, {
-        folder: 'freelancers',
+        folder:        'freelancers',
         resource_type: 'raw',
-        access_mode: 'public',
+        access_mode:   'public',
       });
-    } catch (uploadError) {
-      return res.status(500).json({ message: 'Failed to upload PDF to Cloudinary', error: uploadError.message });
+    } catch (err) {
+      return res.status(500).json({ message: 'Failed to upload PDF to Cloudinary', error: err.message });
     }
-
-    if (!uploadResult || !uploadResult.public_id || !uploadResult.secure_url) {
+    if (!uploadResult?.public_id || !uploadResult?.secure_url)
       return res.status(500).json({ message: 'Invalid Cloudinary upload result' });
-    }
 
     try {
       await new UserPdf({ userId, pdfUrl: uploadResult.secure_url }).save();
-    } catch (dbError) {
-      return res.status(500).json({ message: 'Failed to save order in database', error: dbError.message });
+    } catch (err) {
+      return res.status(500).json({ message: 'Failed to save order in database', error: err.message });
     }
 
-    try {
-      await fsPromises.unlink(pdfPath);
-    } catch (deleteError) {
-      console.warn('Failed to delete local PDF:', deleteError.message);
-    }
+    fsPromises.unlink(pdfPath).catch(e => console.warn('Delete failed:', e.message));
 
     return res.status(200).json({
-      message: 'PDF generated successfully',
-      localPath: pdfPath,
+      message:       'PDF generated successfully',
       cloudinaryUrl: uploadResult.secure_url,
     });
+
   } catch (error) {
     console.error('GeneratePdf error:', error.message);
     return res.status(500).json({ message: 'Internal server error', error: error.message });
