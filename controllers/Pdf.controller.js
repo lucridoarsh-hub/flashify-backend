@@ -14,25 +14,26 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Cloudinary config
+// ─── Cloudinary config ──────────────────────────────────────────────────────
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers & constants (exactly as in the first controller)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Directory & assets ────────────────────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.join(__dirname, 'Uploads');
+
 try {
   await fsPromises.mkdir(uploadsDir, { recursive: true });
 } catch (err) {
   throw new Error(`Failed to create uploads directory: ${err.message}`);
 }
+
 const logoPath = path.join(__dirname, 'assets', 'company.png');
 
+// ─── Design tokens ──────────────────────────────────────────────────────────
 const COLORS = {
   primary: '#0f172a',
   secondary: '#2563eb',
@@ -60,10 +61,12 @@ const FONTS = {
   italic: 'Helvetica-Oblique',
 };
 
+// ─── Diagram constants ──────────────────────────────────────────────────────
 const FOLD_LENGTH = 14;
 const FOLD_LABEL_DISTANCE = 60;
 const OPPOSITE_LINES_LEN = 150;
 
+// ─── Layout constants ───────────────────────────────────────────────────────
 const PAGE_MARGIN = 40;
 const COL_GUTTER = 12;
 const COLS = 2;
@@ -77,73 +80,17 @@ const ROW_STRIDE_OTHER = IMG_H_OTHER + PROP_TABLE_H + 10;
 const PER_PAGE_FIRST = 2;
 const PER_PAGE_OTHER = 6;
 
-// Validation, bounds, segments, label positions, etc.
+// ═════════════════════════════════════════════════════════════════════════════
+// VALIDATION
+// ═════════════════════════════════════════════════════════════════════════════
 const validatePoints = (points) =>
-  Array.isArray(points) && points.length > 0 &&
+  Array.isArray(points) &&
+  points.length > 0 &&
   points.every(p => p && !isNaN(parseFloat(p.x)) && !isNaN(parseFloat(p.y)));
 
-const calculateBounds = (
-  path, scale, showBorder, borderOffsetDirection,
-  labelPositions = {}, commits = [],
-  showOppositeLines = false, oppositeLinesDirection = 'far'
-) => {
-  if (!validatePoints(path.points)) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  path.points.forEach(p => {
-    const x = parseFloat(p.x), y = parseFloat(p.y);
-    minX = Math.min(minX, x); minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-  });
-  (path.segments || []).forEach((seg, i) => {
-    if (!seg.labelPosition) return;
-    const lx = parseFloat(seg.labelPosition.x), ly = parseFloat(seg.labelPosition.y);
-    minX = Math.min(minX, lx - 60); maxX = Math.max(maxX, lx + 60);
-    minY = Math.min(minY, ly - 35); maxY = Math.max(maxY, ly + 35);
-    const foldKey = `fold-${path.pathIndex}-${i}`;
-    const fp = labelPositions[foldKey];
-    if (fp) {
-      const fx = parseFloat(fp.x), fy = parseFloat(fp.y);
-      minX = Math.min(minX, fx - 60); maxX = Math.max(maxX, fx + 60);
-      minY = Math.min(minY, fy - 35); maxY = Math.max(maxY, fy + 35);
-    }
-  });
-  (path.angles || []).forEach(angle => {
-    if (!angle.labelPosition) return;
-    const av = Math.round(parseFloat(angle.angle.replace(/°/g, '')));
-    if ([90, 270, 45, 315].includes(av)) return;
-    const lx = parseFloat(angle.labelPosition.x), ly = parseFloat(angle.labelPosition.y);
-    minX = Math.min(minX, lx - 60); maxX = Math.max(maxX, lx + 60);
-    minY = Math.min(minY, ly - 35); maxY = Math.max(maxY, ly + 35);
-  });
-  commits.forEach(c => {
-    if (!c.position) return;
-    const cx = parseFloat(c.position.x), cy = parseFloat(c.position.y);
-    minX = Math.min(minX, cx - 60); maxX = Math.max(maxX, cx + 60);
-    minY = Math.min(minY, cy - 30); maxY = Math.max(maxY, cy + 30);
-  });
-  if (showOppositeLines && path.points.length > 1) {
-    const angle = oppositeLinesDirection === 'far' ? 135 : 315;
-    const angleRad = angle * Math.PI / 180;
-    const dx = Math.cos(angleRad), dy = Math.sin(angleRad);
-    path.points.forEach(p => {
-      const x = parseFloat(p.x), y = parseFloat(p.y);
-      minX = Math.min(minX, x, x + dx * OPPOSITE_LINES_LEN);
-      maxX = Math.max(maxX, x, x + dx * OPPOSITE_LINES_LEN);
-      minY = Math.min(minY, y, y + dy * OPPOSITE_LINES_LEN);
-      maxY = Math.max(maxY, y, y + dy * OPPOSITE_LINES_LEN);
-    });
-  }
-  if (showBorder && path.points.length > 1) {
-    calcOffsetSegments(path, borderOffsetDirection).forEach(s => {
-      minX = Math.min(minX, s.p1.x, s.p2.x); maxX = Math.max(maxX, s.p1.x, s.p2.x);
-      minY = Math.min(minY, s.p1.y, s.p2.y); maxY = Math.max(maxY, s.p1.y, s.p2.y);
-    });
-  }
-  const span = Math.max(maxX - minX, maxY - minY);
-  const padding = Math.max(40, span * 0.1);
-  return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
-};
-
+// ═════════════════════════════════════════════════════════════════════════════
+// BOUNDS & OFFSET SEGMENTS
+// ═════════════════════════════════════════════════════════════════════════════
 const calcOffsetSegments = (path, direction, dist = 15) => {
   if (!validatePoints(path.points)) return [];
   const segs = [];
@@ -164,21 +111,110 @@ const calcOffsetSegments = (path, direction, dist = 15) => {
   return segs;
 };
 
+const calculateBounds = (
+  path,
+  scale,
+  showBorder,
+  borderOffsetDirection,
+  labelPositions = {},
+  commits = [],
+  showOppositeLines = false,
+  oppositeLinesDirection = 'far'
+) => {
+  if (!validatePoints(path.points))
+    return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  path.points.forEach(p => {
+    const x = parseFloat(p.x), y = parseFloat(p.y);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  });
+
+  (path.segments || []).forEach((seg, i) => {
+    if (!seg.labelPosition) return;
+    const lx = parseFloat(seg.labelPosition.x), ly = parseFloat(seg.labelPosition.y);
+    minX = Math.min(minX, lx - 60);
+    maxX = Math.max(maxX, lx + 60);
+    minY = Math.min(minY, ly - 35);
+    maxY = Math.max(maxY, ly + 35);
+  });
+
+  (path.angles || []).forEach(angle => {
+    if (!angle.labelPosition) return;
+    const av = Math.round(parseFloat(angle.angle.replace(/°/g, '')));
+    if ([90, 270, 45, 315].includes(av)) return;
+    const lx = parseFloat(angle.labelPosition.x), ly = parseFloat(angle.labelPosition.y);
+    minX = Math.min(minX, lx - 60);
+    maxX = Math.max(maxX, lx + 60);
+    minY = Math.min(minY, ly - 35);
+    maxY = Math.max(maxY, ly + 35);
+  });
+
+  commits.forEach(c => {
+    if (!c.position) return;
+    const cx = parseFloat(c.position.x), cy = parseFloat(c.position.y);
+    minX = Math.min(minX, cx - 60);
+    maxX = Math.max(maxX, cx + 60);
+    minY = Math.min(minY, cy - 30);
+    maxY = Math.max(maxY, cy + 30);
+  });
+
+  if (showOppositeLines && path.points.length > 1) {
+    const angle = oppositeLinesDirection === 'far' ? 135 : 315;
+    const angleRad = (angle * Math.PI) / 180;
+    const dx = Math.cos(angleRad), dy = Math.sin(angleRad);
+    path.points.forEach(p => {
+      const x = parseFloat(p.x), y = parseFloat(p.y);
+      minX = Math.min(minX, x, x + dx * OPPOSITE_LINES_LEN);
+      maxX = Math.max(maxX, x, x + dx * OPPOSITE_LINES_LEN);
+      minY = Math.min(minY, y, y + dy * OPPOSITE_LINES_LEN);
+      maxY = Math.max(maxY, y, y + dy * OPPOSITE_LINES_LEN);
+    });
+  }
+
+  if (showBorder && path.points.length > 1) {
+    calcOffsetSegments(path, borderOffsetDirection).forEach(s => {
+      minX = Math.min(minX, s.p1.x, s.p2.x);
+      maxX = Math.max(maxX, s.p1.x, s.p2.x);
+      minY = Math.min(minY, s.p1.y, s.p2.y);
+      maxY = Math.max(maxY, s.p1.y, s.p2.y);
+    });
+  }
+
+  const span = Math.max(maxX - minX, maxY - minY);
+  const padding = Math.max(40, span * 0.1);
+  return {
+    minX: minX - padding,
+    minY: minY - padding,
+    maxX: maxX + padding,
+    maxY: maxY + padding,
+  };
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FOLD LABEL POSITION
+// ═════════════════════════════════════════════════════════════════════════════
 const calcFoldLabelPos = (segment, isFirst, p1, p2, foldType, foldAngle = 0, flipped = false) => {
   const dx = parseFloat(p2.x) - parseFloat(p1.x);
   const dy = parseFloat(p2.y) - parseFloat(p1.y);
   const len = Math.sqrt(dx * dx + dy * dy);
   if (len === 0) return null;
+
   const ux = dx / len, uy = dy / len;
   const base = isFirst ? p1 : p2;
   let bdx = isFirst ? ux : -ux, bdy = isFirst ? uy : -uy;
   let nx = -bdy, ny = bdx;
   if (flipped) { nx = -nx; ny = -ny; }
+
   let ldx, ldy;
   if (foldType === 'Crush') {
     ldx = nx; ldy = ny;
   } else {
-    const rad = foldAngle * Math.PI / 180;
+    const rad = (foldAngle * Math.PI) / 180;
     ldx = bdx * Math.cos(rad) - bdy * Math.sin(rad);
     ldy = bdx * Math.sin(rad) + bdy * Math.cos(rad);
     if (ldx * nx + ldy * ny < 0) { ldx = -ldx; ldy = -ldy; }
@@ -191,7 +227,10 @@ const calcFoldLabelPos = (segment, isFirst, p1, p2, foldType, foldAngle = 0, fli
   };
 };
 
-const calcTotalFolds = path => {
+// ═════════════════════════════════════════════════════════════════════════════
+// STAT HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+const calcTotalFolds = (path) => {
   let total = (path.angles || []).length;
   (path.segments || []).forEach(seg => {
     const t = typeof seg.fold === 'object' && seg.fold ? seg.fold.type || 'None' : seg.fold || 'None';
@@ -200,7 +239,7 @@ const calcTotalFolds = path => {
   return total;
 };
 
-const calcGirth = path => {
+const calcGirth = (path) => {
   let total = 0;
   (path.segments || []).forEach(seg => {
     total += parseFloat((seg.length || '0').replace(/[^0-9.]/g, '')) || 0;
@@ -208,20 +247,22 @@ const calcGirth = path => {
   return Math.round(total).toString();
 };
 
-const formatQxL = arr => {
+const formatQxL = (arr) => {
   if (!Array.isArray(arr)) return 'N/A';
-  return arr.map(item =>
-    `${item.quantity} x ${parseFloat(item.length).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
-  ).join(' ');
+  return arr
+    .map(item => `${item.quantity} x ${parseFloat(item.length).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`)
+    .join(' ');
 };
 
-const mmStr = lengthStr => {
+const mmStr = (lengthStr) => {
   if (!lengthStr) return '';
   const n = parseFloat(lengthStr);
   return isNaN(n) ? lengthStr : `${Math.round(n)}mm`;
 };
 
-// SVG generator (uses per‑path opposite lines flags)
+// ═════════════════════════════════════════════════════════════════════════════
+// SVG GENERATOR (with new border arrow style)
+// ═════════════════════════════════════════════════════════════════════════════
 const generateSvg = (
   path, bounds, scale, showBorder, borderOffsetDirection,
   labelPositions = {}, commits = [],
@@ -229,12 +270,14 @@ const generateSvg = (
   W = 800
 ) => {
   const H = W;
+
   if (!validatePoints(path.points)) {
     return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
       <rect width="${W}" height="${H}" fill="${COLORS.diagramBg}"/>
       <text x="50%" y="50%" font-size="20" text-anchor="middle" fill="#666">Invalid path data</text>
     </svg>`;
   }
+
   const pad = W * 0.05;
   const rawW = bounds.maxX - bounds.minX;
   const rawH = bounds.maxY - bounds.minY;
@@ -246,10 +289,12 @@ const generateSvg = (
   const drawH = effH * sf;
   const offsetX = (W - drawW) / 2 - bounds.minX * sf;
   const offsetY = (H - drawH) / 2 - bounds.minY * sf;
+
   const tc = (x, y) => ({
     x: parseFloat(x) * sf + offsetX,
     y: parseFloat(y) * sf + offsetY,
   });
+
   const PATH_SW = 2.5;
   const POINT_R = 4;
   const BORDER_SW = 1.8;
@@ -261,6 +306,7 @@ const generateSvg = (
   const ARROW_SZ = 8;
   const SHADOW_B = 2;
 
+  // Grid calculation
   const targetGridPx = 50;
   const rawStep = targetGridPx / sf;
   const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
@@ -268,7 +314,10 @@ const generateSvg = (
   let gridStep = magnitude;
   for (const n of niceOptions) {
     const candidate = n * magnitude;
-    if (candidate >= rawStep * 0.8) { gridStep = candidate; break; }
+    if (candidate >= rawStep * 0.8) {
+      gridStep = candidate;
+      break;
+    }
   }
   const gridPx = gridStep * sf;
 
@@ -302,10 +351,10 @@ const generateSvg = (
 
   let c = '';
 
-  // Opposite lines (using per‑path flags)
+  // Opposite lines (per‑path)
   if (showOppositeLines) {
     const angle = oppositeLinesDirection === 'far' ? 135 : 315;
-    const rad = angle * Math.PI / 180;
+    const rad = (angle * Math.PI) / 180;
     const dx = Math.cos(rad), dy = Math.sin(rad);
     path.points.forEach(p => {
       const x = parseFloat(p.x), y = parseFloat(p.y);
@@ -315,13 +364,15 @@ const generateSvg = (
     });
   }
 
-  // Border + accent arrow (unchanged)
+  // Border (dashed offset) + accent arrow (line + chevron)
   if (showBorder && path.points.length > 1) {
     const segs = calcOffsetSegments(path, borderOffsetDirection, 15);
     segs.forEach(s => {
       const a = tc(s.p1.x, s.p1.y), b = tc(s.p2.x, s.p2.y);
       c += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#374151" stroke-width="${BORDER_SW}" stroke-dasharray="8,5"/>`;
     });
+
+    // ---- NEW: arrow style from generatePdfDownload ----
     if (segs.length > 0 && path.points[0] && path.points[1]) {
       const p1 = path.points[0], p2 = path.points[1];
       const dx = parseFloat(p2.x) - parseFloat(p1.x);
@@ -331,28 +382,68 @@ const generateSvg = (
         const ux = dx / len, uy = dy / len;
         const mx = (parseFloat(p1.x) + parseFloat(p2.x)) / 2;
         const my = (parseFloat(p1.y) + parseFloat(p2.y)) / 2;
+
+        // Normal pointing toward border side
         const nx = borderOffsetDirection === 'inside' ? -uy : uy;
         const ny = borderOffsetDirection === 'inside' ? ux : -ux;
-        const ARROW_OFFSET = 10;
-        const chX = mx + nx * ARROW_OFFSET;
-        const chY = my + ny * ARROW_OFFSET;
-        const { x: cvX, y: cvY } = tc(chX, chY);
-        const cvS = 10;
-        c += `<path d="M${cvX + cvS * nx + cvS * ux},${cvY + cvS * ny + cvS * uy} L${cvX},${cvY} L${cvX + cvS * nx - cvS * ux},${cvY + cvS * ny - cvS * uy} Z" stroke="${COLORS.accent}" stroke-width="2" fill="${COLORS.accent}"/>`;
+
+        const ARROW_TAIL_LEN = 28;
+        const HEAD_SIZE = 9;
+        const OFFSET = 8; // gap from path midpoint
+
+        const tipX = mx + nx * OFFSET;
+        const tipY = my + ny * OFFSET;
+        const tailX = mx + nx * (OFFSET + ARROW_TAIL_LEN);
+        const tailY = my + ny * (OFFSET + ARROW_TAIL_LEN);
+
+        const { x: cvTipX, y: cvTipY } = tc(tipX, tipY);
+        const { x: cvTailX, y: cvTailY } = tc(tailX, tailY);
+
+        const adx = cvTipX - cvTailX;
+        const ady = cvTipY - cvTailY;
+        const alen = Math.sqrt(adx * adx + ady * ady) || 1;
+        const aux = adx / alen;
+        const auy = ady / alen;
+
+        const apx = -auy;
+        const apy = aux;
+
+        const baseX = cvTipX - aux * HEAD_SIZE;
+        const baseY = cvTipY - auy * HEAD_SIZE;
+        const wing1X = baseX + apx * HEAD_SIZE * 0.6;
+        const wing1Y = baseY + apy * HEAD_SIZE * 0.6;
+        const wing2X = baseX - apx * HEAD_SIZE * 0.6;
+        const wing2Y = baseY - apy * HEAD_SIZE * 0.6;
+
+        // Shaft line
+        c += `<line
+          x1="${cvTailX.toFixed(1)}" y1="${cvTailY.toFixed(1)}"
+          x2="${baseX.toFixed(1)}"  y2="${baseY.toFixed(1)}"
+          stroke="${COLORS.accent}" stroke-width="2.5" stroke-linecap="round"/>`;
+
+        // Filled arrowhead triangle
+        c += `<polygon
+          points="${cvTipX.toFixed(1)},${cvTipY.toFixed(1)} ${wing1X.toFixed(1)},${wing1Y.toFixed(1)} ${wing2X.toFixed(1)},${wing2Y.toFixed(1)}"
+          fill="${COLORS.accent}" stroke="${COLORS.accent}" stroke-width="1" stroke-linejoin="round"/>`;
       }
     }
   }
 
-  // Main path & points (unchanged)
+  // Main path
   if (path.points.length > 1) {
-    const pts = path.points.map(p => { const { x, y } = tc(p.x, p.y); return `${x.toFixed(1)},${y.toFixed(1)}`; }).join(' L ');
+    const pts = path.points
+      .map(p => { const { x, y } = tc(p.x, p.y); return `${x.toFixed(1)},${y.toFixed(1)}`; })
+      .join(' L ');
     c += `<path d="M ${pts}" stroke="#1e293b" stroke-width="${PATH_SW}" fill="none" stroke-linejoin="round" stroke-linecap="round"/>`;
   }
+
+  // Path points
   path.points.forEach(p => {
     const { x, y } = tc(p.x, p.y);
     c += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${POINT_R}" fill="#1e293b" stroke="#fff" stroke-width="1.5" filter="url(#ds)"/>`;
   });
 
+  // Tail arrow helper
   const makeTail = (px, py, tx, ty, tw, lh) => {
     const ldx = tx - px, ldy = ty - py;
     if (Math.abs(ldx) > Math.abs(ldy)) {
@@ -366,6 +457,7 @@ const generateSvg = (
     }
   };
 
+  // Label pill helper
   const labelPill = (px, py, text, fillColor = '#ffffff', textColor = '#111827', arrowFill = '#111827', tailPath = '') =>
     `<g filter="url(#ds)">
       <rect x="${(px - Math.max(60, text.length * 7.5 + 16) / 2).toFixed(1)}" y="${(py - LABEL_H / 2).toFixed(1)}" width="${Math.max(60, text.length * 7.5 + 16).toFixed(1)}" height="${LABEL_H}" fill="${fillColor}" rx="${LABEL_RX}" stroke="#d1d5db" stroke-width="0.8"/>
@@ -373,10 +465,11 @@ const generateSvg = (
       <text x="${px.toFixed(1)}" y="${py.toFixed(1)}" font-size="${FONT_SZ}" font-family="Helvetica, Arial, sans-serif" font-weight="600" fill="${textColor}" text-anchor="middle" dominant-baseline="middle">${text}</text>
     </g>`;
 
-  // Segment & fold labels (unchanged)
+  // Segment & fold labels
   c += (path.segments || []).map((seg, i) => {
     const p1 = path.points[i], p2 = path.points[i + 1];
     if (!p1 || !p2 || !seg.labelPosition) return '';
+
     const { x: px, y: py } = tc(seg.labelPosition.x, seg.labelPosition.y);
     const { x: p1x, y: p1y } = tc(p1.x, p1.y);
     const { x: p2x, y: p2y } = tc(p2.x, p2.y);
@@ -385,7 +478,7 @@ const generateSvg = (
     const tw = Math.max(60, text.length * 7.5 + 16);
     const tail = makeTail(px, py, midX, midY, tw, LABEL_H);
     let out = labelPill(px, py, text, '#ffffff', '#111827', '#111827', tail);
-    // ... fold handling (same as original)
+
     let fType = 'None', fLen = FOLD_LENGTH, fAngle = 0, fTail = 20, fFlip = false;
     if (typeof seg.fold === 'object' && seg.fold) {
       fType = seg.fold.type || 'None';
@@ -396,8 +489,10 @@ const generateSvg = (
     } else {
       fType = seg.fold || 'None';
     }
+
     const isFirst = i === 0;
     const isLast = i === path.points.length - 2;
+
     if (fType !== 'None' && (isFirst || isLast)) {
       const dx = parseFloat(p2.x) - parseFloat(p1.x);
       const dy = parseFloat(p2.y) - parseFloat(p1.y);
@@ -407,10 +502,11 @@ const generateSvg = (
         const bx = isFirst ? parseFloat(p1.x) : parseFloat(p2.x);
         const by = isFirst ? parseFloat(p1.y) : parseFloat(p2.y);
         let fPath = '';
+
         if (fType === 'Crush') {
           let nx = isFirst ? -uy : uy, ny = isFirst ? ux : -ux;
           if (fFlip) { nx = -nx; ny = -ny; }
-          const rad = fAngle * Math.PI / 180;
+          const rad = (fAngle * Math.PI) / 180;
           const cA = Math.cos(rad), sA = Math.sin(rad);
           const rNX = nx * cA - ny * sA, rNY = nx * sA + ny * cA;
           const cW = fLen * 0.8, cH = fLen * 0.6;
@@ -431,6 +527,7 @@ const generateSvg = (
           fPath = `M${sb2.x.toFixed(1)},${sb2.y.toFixed(1)} L${se.x.toFixed(1)},${se.y.toFixed(1)}`;
         }
         out += `<path d="${fPath}" stroke="#374151" stroke-width="${FOLD_SW}" fill="none" stroke-linecap="round"/>`;
+
         const flp = calcFoldLabelPos(seg, isFirst, p1, p2, fType, fAngle, fFlip);
         if (flp) {
           const { x: flX, y: flY } = tc(flp.x, flp.y);
@@ -445,7 +542,7 @@ const generateSvg = (
     return out;
   }).join('');
 
-  // Angle labels (unchanged)
+  // Angle labels
   c += (path.angles || []).map(angle => {
     if (!angle.labelPosition) return '';
     const av = Math.round(parseFloat(angle.angle.replace(/°/g, '')));
@@ -460,6 +557,7 @@ const generateSvg = (
     return labelPill(px, py, text, '#fff7ed', '#c2410c', '#c2410c', tail);
   }).join('');
 
+  // Commit points
   commits.forEach(commit => {
     if (!commit.position) return;
     const { x: px, y: py } = tc(commit.position.x, commit.position.y);
@@ -474,7 +572,9 @@ const generateSvg = (
   </svg>`;
 };
 
-// PDF drawing helpers (identical to first controller)
+// ═════════════════════════════════════════════════════════════════════════════
+// PDF DRAWING HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
 const drawHeader = (doc, pageWidth, y, headerInfo, logoBuffer) => {
   const margin = PAGE_MARGIN;
   const info = headerInfo || {
@@ -486,12 +586,14 @@ const drawHeader = (doc, pageWidth, y, headerInfo, logoBuffer) => {
   doc.font(FONTS.title).fontSize(17).fillColor(COLORS.darkText).text(info.name, margin, 16);
   doc.font(FONTS.body).fontSize(10).fillColor('#4b5563').text(info.contact, margin, 40);
   doc.font(FONTS.italic).fontSize(10).fillColor('#6b7280').text(info.tagline, margin, 56);
+
   try {
     const src = logoBuffer || logoPath;
     const logo = doc.openImage(src);
     const lh = 48, lw = logo.width * lh / logo.height;
     doc.image(src, pageWidth - margin - lw, 16, { width: lw, height: lh });
   } catch (_) {}
+
   doc.moveTo(margin, 76).lineTo(pageWidth - margin, 76)
     .strokeColor(COLORS.secondary).lineWidth(1.5).undash().stroke();
   return 92;
@@ -512,10 +614,12 @@ const drawOrderDetailsTable = (doc, JobReference, Number, OrderContact, OrderDat
   const pw = doc.page.width;
   const tw = pw - 2 * margin;
   const rh = 26;
+
   doc.rect(margin, y, tw, rh).fill(COLORS.tableHeader);
   doc.font(FONTS.tableHeader).fontSize(12).fillColor(COLORS.primary)
     .text('ORDER DETAILS', margin + 10, y + 7);
   y += rh;
+
   const rows = [
     ['JOB REFERENCE', JobReference],
     ['PO NUMBER', Number],
@@ -523,6 +627,7 @@ const drawOrderDetailsTable = (doc, JobReference, Number, OrderContact, OrderDat
     ['ORDER DATE', OrderDate],
     ['DELIVERY ADDRESS', DeliveryAddress || 'PICKUP'],
   ];
+
   rows.forEach(([label, value], i) => {
     if (i % 2 === 0) doc.rect(margin, y, tw, rh).fill(COLORS.tableRow);
     doc.circle(margin + 14, y + 13, 2).fill(COLORS.secondary);
@@ -532,6 +637,7 @@ const drawOrderDetailsTable = (doc, JobReference, Number, OrderContact, OrderDat
       .strokeColor(COLORS.border).lineWidth(0.5).stroke();
     y += rh;
   });
+
   return y + 20;
 };
 
@@ -539,6 +645,7 @@ const drawInstructions = (doc, y) => {
   const margin = PAGE_MARGIN;
   const pw = doc.page.width;
   y = drawSectionHeader(doc, 'IMPORTANT NOTES', y);
+
   const notes = [
     'Arrow points to the (solid) coloured side',
     '90° and 45° are not labelled',
@@ -547,6 +654,7 @@ const drawInstructions = (doc, y) => {
     'Green labels are commit points (annotations)',
     'Red lines are reference (opposite) lines',
   ];
+
   notes.forEach((note, i) => {
     doc.font(FONTS.body).fontSize(10).fillColor(COLORS.secondary)
       .text(`${i + 1}.`, margin, y);
@@ -554,6 +662,7 @@ const drawInstructions = (doc, y) => {
       .text(note, margin + 18, y, { width: pw - 2 * margin - 18 });
     y += 17;
   });
+
   y += 6;
   doc.rect(margin, y, pw - 2 * margin, 28).fill('#fee2e2');
   doc.font(FONTS.subtitle).fontSize(11).fillColor(COLORS.accent)
@@ -575,6 +684,7 @@ const drawPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex, tableWidth)
   const colRatios = [0.07, 0.36, 0.20, 0.11, 0.26];
   const cw = colRatios.map(r => Math.floor(r * tableWidth));
   cw[cw.length - 1] += tableWidth - cw.reduce((a, b) => a + b, 0);
+
   const headers = ['#', 'Colour', 'CODE', 'F', 'GIRTH'];
   const totalFolds = calcTotalFolds(pathData).toString();
   const girth = `${calcGirth(pathData)}mm`;
@@ -582,8 +692,10 @@ const drawPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex, tableWidth)
   const code = (pathData.code || '').replace(/\D/g, '');
   const row = [(pathIndex + 1).toString(), color, code, totalFolds, girth];
   const aligns = ['center', 'left', 'center', 'center', 'center'];
+
   let cy = y;
-  // Header
+
+  // Header row
   doc.rect(x, cy, tableWidth, rh).fill(COLORS.tableHeader);
   doc.font(FONTS.tableHeader).fontSize(fhdr).fillColor(COLORS.darkText);
   let cx = x;
@@ -592,6 +704,7 @@ const drawPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex, tableWidth)
     cx += cw[i];
   });
   cy += rh;
+
   // Data row
   doc.font(FONTS.tableBody).fontSize(fbody);
   let maxH = 0;
@@ -608,6 +721,7 @@ const drawPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex, tableWidth)
   });
   doc.fillColor(COLORS.darkText);
   cy += drh;
+
   // Borders
   doc.lineWidth(0.5).strokeColor(COLORS.border);
   doc.moveTo(x, y).lineTo(x + tableWidth, y).stroke();
@@ -618,7 +732,7 @@ const drawPropertyTable = (doc, x, y, pathData, qxlGroup, pathIndex, tableWidth)
     doc.moveTo(cx, y).lineTo(cx, cy).stroke();
     if (i < cw.length) cx += cw[i];
   }
-  // QxL + total metres
+
   const qxlStr = formatQxL(qxlGroup);
   let totalM = 0;
   qxlGroup.forEach(item => { totalM += item.quantity * parseFloat(item.length) / 1000; });
@@ -636,6 +750,7 @@ const drawSummaryTable = (doc, validPaths, grouped, y) => {
   const pw = doc.page.width;
   const ph = doc.page.height;
   y = drawSectionHeader(doc, 'ORDER SUMMARY', y);
+
   const headers = ['#', 'Colour', 'Code', 'F', 'GIRTH', 'Q x L'];
   const colWidths = [25, 90, 60, 30, 60, pw - 2 * margin - 265];
   const minRH = 22;
@@ -659,19 +774,24 @@ const drawSummaryTable = (doc, validPaths, grouped, y) => {
 
   y = drawSumHeader(y);
   let totF = 0, totG = 0;
+
   validPaths.forEach((path, idx) => {
     const qxL = formatQxL(grouped[idx] || []);
     const folds = calcTotalFolds(path);
     const rawGirth = parseFloat(calcGirth(path));
     const girth = Math.round(rawGirth);
-    totF += folds; totG += rawGirth;
+    totF += folds;
+    totG += rawGirth;
     const code = (path.code || '').replace(/\D/g, '');
     const row = [`${idx + 1}`, path.color || 'N/A', code, folds.toString(), `${girth}mm`, qxL || 'N/A'];
+
     doc.font(FONTS.tableBody).fontSize(9.5);
     let maxH = 0;
     row.forEach((v, i) => { maxH = Math.max(maxH, doc.heightOfString(v, { width: colWidths[i] - 10 })); });
     const rh = Math.max(minRH, maxH + pad);
+
     if (idx % 2 === 0) doc.rect(margin, y, pw - 2 * margin, rh).fill(COLORS.tableRow);
+
     let xp = margin;
     row.forEach((v, i) => {
       const aln = (i === 0 || i === 3 || i === 4) ? 'center' : 'left';
@@ -680,9 +800,11 @@ const drawSummaryTable = (doc, validPaths, grouped, y) => {
       doc.text(v, xp + 5, y + (rh - th) / 2, { width: colWidths[i] - 10, align: aln });
       xp += colWidths[i];
     });
+
     doc.moveTo(margin, y + rh).lineTo(pw - margin, y + rh)
       .strokeColor(COLORS.border).lineWidth(0.5).stroke();
     y += rh;
+
     if (y + minRH > ph - 80) {
       doc.addPage();
       y = 20;
@@ -690,6 +812,7 @@ const drawSummaryTable = (doc, validPaths, grouped, y) => {
       y = drawSumHeader(y);
     }
   });
+
   const totRow = ['', 'Totals', '', totF.toString(), `${Math.round(totG)}mm`, ''];
   let tmH = 0;
   totRow.forEach((v, i) => { tmH = Math.max(tmH, doc.heightOfString(v, { width: colWidths[i] - 10 })); });
@@ -703,33 +826,48 @@ const drawSummaryTable = (doc, validPaths, grouped, y) => {
     doc.text(v, xp + 5, y + (trh - th) / 2, { width: colWidths[i] - 10, align: aln });
     xp += colWidths[i];
   });
+
   return y + trh + 25;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RENDER CELL (uses per‑path opposite lines flags)
-// ─────────────────────────────────────────────────────────────────────────────
-const renderCell = async (doc, pathIndex, colX, yPos, imgH, validPaths, grouped, scale, showBorder, borderOffsetDirection, labelPositions, commits, projShowOppositeLines, projOppositeLinesDirection) => {
+// ═════════════════════════════════════════════════════════════════════════════
+// RENDER CELL (per‑path overrides)
+// ═════════════════════════════════════════════════════════════════════════════
+const renderCell = async (
+  doc, pathIndex, colX, yPos, imgH,
+  validPaths, grouped,
+  scale, showBorder, borderOffsetDirection,   // project‑level defaults
+  labelPositions, commits,
+  projShowOppositeLines, projOppositeLinesDirection
+) => {
   try {
     const pd = validPaths[pathIndex];
-    // ✅ per‑path overrides (same as first controller)
-    const pathShowOppositeLines = pd.showOppositeLines ?? projShowOppositeLines;
-    const pathOppositeLinesDir = pd.oppositeLinesDirection ?? projOppositeLinesDirection ?? 'far';
+
+    // ✅ Per‑path overrides for border and opposite lines
+    const pathShowBorder        = pd.showBorder ?? showBorder;
+    const pathBorderOffsetDir   = pd.borderOffsetDirection ?? borderOffsetDirection;
+    const pathShowOppLines      = pd.showOppositeLines ?? projShowOppositeLines;
+    const pathOppLinesDir       = pd.oppositeLinesDirection ?? projOppositeLinesDirection ?? 'far';
 
     const bounds = calculateBounds(
-      pd, scale, showBorder, borderOffsetDirection,
-      labelPositions, commits, pathShowOppositeLines, pathOppositeLinesDir
+      pd, scale, pathShowBorder, pathBorderOffsetDir,
+      labelPositions, commits,
+      pathShowOppLines, pathOppLinesDir
     );
     const svg = generateSvg(
-      pd, bounds, scale, showBorder, borderOffsetDirection,
-      labelPositions, commits, pathShowOppositeLines, pathOppositeLinesDir, SVG_PX
+      pd, bounds, scale, pathShowBorder, pathBorderOffsetDir,
+      labelPositions, commits,
+      pathShowOppLines, pathOppLinesDir,
+      SVG_PX
     );
     const imgBuf = await sharp(Buffer.from(svg))
       .resize({ width: SVG_PX, height: SVG_PX, fit: 'fill' })
       .png({ quality: 100, compressionLevel: 6 })
       .toBuffer();
+
     const tableEndY = drawPropertyTable(doc, colX, yPos, pd, grouped[pathIndex], pathIndex, CELL_WIDTH);
     doc.image(imgBuf, colX, tableEndY, { width: CELL_WIDTH, height: imgH });
+
     const cellH = (tableEndY - yPos) + imgH;
     doc.rect(colX, yPos, CELL_WIDTH, cellH).lineWidth(0.7).strokeColor(COLORS.border).stroke();
     doc.moveTo(colX, tableEndY).lineTo(colX + CELL_WIDTH, tableEndY)
@@ -741,11 +879,18 @@ const renderCell = async (doc, pathIndex, colX, yPos, imgH, validPaths, grouped,
   }
 };
 
-// ================== MAIN EMAIL‑SEND CONTROLLER (Header only on first page) ==================
+// ═════════════════════════════════════════════════════════════════════════════
+// MAIN EMAIL‑SEND CONTROLLER (generatePdf)
+// ═════════════════════════════════════════════════════════════════════════════
 export const generatePdf = async (req, res) => {
   try {
-    const { selectedProjectData, JobReference, Number, OrderContact, OrderDate, DeliveryAddress, PickupNotes, Notes, AdditionalItems, emails } = req.body;
+    const {
+      selectedProjectData, JobReference, Number, OrderContact,
+      OrderDate, DeliveryAddress, PickupNotes, Notes, AdditionalItems, emails
+    } = req.body;
     const { userId } = req.params;
+
+    console.log("preview data", selectedProjectData);
 
     if (!JobReference || !Number || !OrderContact || !OrderDate)
       return res.status(400).json({ message: 'JobReference, Number, OrderContact, and OrderDate are required' });
@@ -759,7 +904,7 @@ export const generatePdf = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Company info & logo (used only on first page)
+    // Company info & logo
     let logoBuffer = null, headerInfo = null;
     if (user.company) {
       try {
@@ -777,7 +922,11 @@ export const generatePdf = async (req, res) => {
         }
       } catch (_) {}
     }
-    headerInfo ||= { name: 'COMMERCIAL ROOFERS PTY LTD', contact: 'info@commercialroofers.net.au | 0421259430', tagline: 'Professional Roofing Solutions' };
+    headerInfo ||= {
+      name: 'COMMERCIAL ROOFERS PTY LTD',
+      contact: 'info@commercialroofers.net.au | 0421259430',
+      tagline: 'Professional Roofing Solutions',
+    };
 
     let projectData = typeof selectedProjectData === 'string' ? JSON.parse(selectedProjectData) : selectedProjectData;
     if (!projectData?.paths?.length) return res.status(400).json({ message: 'Invalid project data' });
@@ -839,10 +988,9 @@ export const generatePdf = async (req, res) => {
       }
     }
 
-    // ─── Subsequent diagram pages (compact) – NO HEADER ───
+    // ─── Subsequent diagram pages (compact) ───
     for (let pageIdx = 0; pageIdx < remainingPages; pageIdx++) {
       doc.addPage();
-      // Start content at top margin (20pt)
       let secY = 20;
       secY = drawSectionHeader(doc, `FLASHING DETAILS - PART ${part++} OF ${imagePageCount}`, secY);
       const startIdx = firstPageCount + pageIdx * PER_PAGE_OTHER;
@@ -857,7 +1005,7 @@ export const generatePdf = async (req, res) => {
       }
     }
 
-    // ─── Summary page – NO HEADER ───
+    // ─── Summary page ───
     doc.addPage();
     const summaryStartY = 20;
     drawSummaryTable(doc, validPaths, grouped, summaryStartY);
@@ -879,7 +1027,7 @@ export const generatePdf = async (req, res) => {
     const exists = await fsPromises.access(pdfPath).then(() => true).catch(() => false);
     if (!exists) return res.status(500).json({ message: 'PDF file not generated' });
 
-    // ─── Send email (if any) ───
+    // ─── Send email (if recipients provided) ───
     if (emails && Array.isArray(emails) && emails.length > 0) {
       try {
         const htmlTemplate = `<!DOCTYPE html>
@@ -908,7 +1056,7 @@ export const generatePdf = async (req, res) => {
       }
     }
 
-    // ─── Upload to Cloudinary + save to database ───
+    // ─── Upload to Cloudinary & save order ───
     const uploadResult = await cloudinary.uploader.upload(pdfPath, {
       folder: 'freelancers',
       resource_type: 'raw',
@@ -942,7 +1090,10 @@ export const generatePdf = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error', error: error.message });
   }
 };
-// ================== UPDATE ORDER PDF (full merge + same feather UI) ==================
+
+// ═════════════════════════════════════════════════════════════════════════════
+// UPDATE ORDER PDF
+// ═════════════════════════════════════════════════════════════════════════════
 export const UpdateGerantePdfOrder = async (req, res) => {
   try {
     const { userId, orderId } = req.params;
@@ -956,7 +1107,7 @@ export const UpdateGerantePdfOrder = async (req, res) => {
 
     const { JobReference, Number, OrderContact, OrderDate, DeliveryAddress, data: newData, emails } = req.body;
 
-    // Merge data
+    // Merge data (per‑path overrides included automatically)
     const mergedData = {
       ...findOrder.data,
       paths: [
@@ -987,7 +1138,6 @@ export const UpdateGerantePdfOrder = async (req, res) => {
       findOrder.QuantitiesAndLengths.slice(i * itemsPerPath, Math.min((i + 1) * itemsPerPath, findOrder.QuantitiesAndLengths.length))
     );
 
-    // Reuse same PDF generation logic
     const doc = new PDFDocument({
       size: 'A4',
       bufferPages: true,
@@ -1004,7 +1154,6 @@ export const UpdateGerantePdfOrder = async (req, res) => {
     const pageWidth = 595;
     const colXs = Array.from({ length: COLS }, (_, c) => PAGE_MARGIN + c * (CELL_WIDTH + COL_GUTTER));
 
-    // Header + Order details + Instructions (same as generate)
     doc.addPage();
     let y = drawHeader(doc, pageWidth, 0, { name: findUser.company ? 'Updated Company' : 'COMMERCIAL ROOFERS PTY LTD', contact: findUser.email || 'info@commercialroofers.net.au', tagline: 'Professional Roofing Solutions' }, null);
     y = drawOrderDetailsTable(doc, updatedOrderDetails.JobReference, updatedOrderDetails.Number, updatedOrderDetails.OrderContact, updatedOrderDetails.OrderDate, updatedOrderDetails.DeliveryAddress || findOrder.PickupNotes || 'PICKUP', y);
@@ -1014,7 +1163,6 @@ export const UpdateGerantePdfOrder = async (req, res) => {
     const remainingCount = validPaths.length - firstPageCount;
     const remainingPages = Math.ceil(remainingCount / PER_PAGE_OTHER);
     const imagePageCount = (firstPageCount > 0 ? 1 : 0) + remainingPages;
-
     let part = 1;
 
     if (firstPageCount > 0) {
@@ -1065,7 +1213,6 @@ export const UpdateGerantePdfOrder = async (req, res) => {
       access_mode: 'public',
     });
 
-    // Email (optional)
     if (emails) {
       const emailList = Array.isArray(emails) ? emails : emails.split(',').map(e => e.trim());
       if (emailList.length > 0) {
@@ -1073,13 +1220,12 @@ export const UpdateGerantePdfOrder = async (req, res) => {
           from: `"${findUser.name}" <${findUser.email}>`,
           to: emailList,
           subject: `Updated Flashing Order - ${updatedOrderDetails.JobReference}`,
-          html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">... (same rich HTML as original Update) ...</div>`,
+          html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">... (your rich HTML) ...</div>`,
           attachments: [{ filename: `${updatedOrderDetails.JobReference || 'FlashingOrder'}.pdf`, path: pdfPath, contentType: 'application/pdf' }],
         });
       }
     }
 
-    // Save to DB
     await ProjectOrder.findByIdAndUpdate(orderId, {
       pdf: [{ public_id: uploadResult.public_id, url: uploadResult.secure_url }],
       ...updatedOrderDetails,
