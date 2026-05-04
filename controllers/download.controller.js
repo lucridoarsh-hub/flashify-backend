@@ -94,7 +94,7 @@ const validatePoints = (points) =>
   points.every(p => p && !isNaN(parseFloat(p.x)) && !isNaN(parseFloat(p.y)));
 
 // ═════════════════════════════════════════════════════════════════════════════
-// BOUNDS (tightened padding for larger diagram display)
+// BOUNDS
 // ═════════════════════════════════════════════════════════════════════════════
 const calculateBounds = (
   path, scale, showBorder, borderOffsetDirection,
@@ -142,7 +142,6 @@ const calculateBounds = (
     minY = Math.min(minY, cy - 30); maxY = Math.max(maxY, cy + 30);
   });
 
-  // Only process opposite lines if enabled
   if (showOppositeLines && path.points.length > 1) {
     const angle    = oppositeLinesDirection === 'far' ? 135 : 315;
     const angleRad = angle * Math.PI / 180;
@@ -325,6 +324,9 @@ const generateSvg = (
     <clipPath id="clip">
       <rect x="0" y="0" width="${W}" height="${H}"/>
     </clipPath>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="${COLORS.accent}"/>
+    </marker>
   </defs>`;
 
   let bg = `<rect x="0" y="0" width="${W}" height="${H}" fill="${COLORS.diagramBg}"/>`;
@@ -357,7 +359,7 @@ const generateSvg = (
     });
   }
 
-  // ── Border (dashed offset) + RED ARROW ───────────────────────────────────
+  // ── Border (dashed offset) + ARROW (line + chevron head = → style) ───────
   if (showBorder && path.points.length > 1) {
     const segs = calcOffsetSegments(path, borderOffsetDirection, 15);
     segs.forEach(s => {
@@ -365,6 +367,7 @@ const generateSvg = (
       c += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#374151" stroke-width="${BORDER_SW}" stroke-dasharray="8,5"/>`;
     });
 
+    // ── Draw → style indicator arrow on the first segment midpoint ─────────
     if (segs.length > 0 && path.points[0] && path.points[1]) {
       const p1 = path.points[0], p2 = path.points[1];
       const dx  = parseFloat(p2.x) - parseFloat(p1.x);
@@ -374,14 +377,54 @@ const generateSvg = (
         const ux = dx / len, uy = dy / len;
         const mx = (parseFloat(p1.x) + parseFloat(p2.x)) / 2;
         const my = (parseFloat(p1.y) + parseFloat(p2.y)) / 2;
+
+        // Normal vector pointing away from path (toward border side)
         const nx = borderOffsetDirection === 'inside' ? -uy :  uy;
         const ny = borderOffsetDirection === 'inside' ?  ux : -ux;
-        const ARROW_OFFSET = 10;
-        const chX = mx + nx * ARROW_OFFSET;
-        const chY = my + ny * ARROW_OFFSET;
-        const { x: cvX, y: cvY } = tc(chX, chY);
-        const cvS = 10;
-        c += `<path d="M${cvX + cvS * nx + cvS * ux},${cvY + cvS * ny + cvS * uy} L${cvX},${cvY} L${cvX + cvS * nx - cvS * ux},${cvY + cvS * ny - cvS * uy} Z" stroke="${COLORS.accent}" stroke-width="2" fill="${COLORS.accent}"/>`;
+
+        // Arrow points TOWARD the path (tip at path side, tail away)
+        const ARROW_TAIL_LEN = 28;  // length of the shaft
+        const HEAD_SIZE      = 9;   // half-width of arrowhead triangle
+        const OFFSET         = 8;   // gap from the path midpoint
+
+        // Tip of arrow points TOWARD the path (close side)
+        const tipX = mx + nx * OFFSET;
+        const tipY = my + ny * OFFSET;
+
+        // Tail is further away from the path
+        const tailX = mx + nx * (OFFSET + ARROW_TAIL_LEN);
+        const tailY = my + ny * (OFFSET + ARROW_TAIL_LEN);
+
+        const { x: cvTipX, y: cvTipY }   = tc(tipX,  tipY);
+        const { x: cvTailX, y: cvTailY } = tc(tailX, tailY);
+
+        // Direction unit vector from tail → tip in canvas coords
+        const adx = cvTipX - cvTailX, ady = cvTipY - cvTailY;
+        const alen = Math.sqrt(adx * adx + ady * ady) || 1;
+        const aux = adx / alen, auy = ady / alen;
+
+        // Perpendicular for arrowhead wings
+        const apx = -auy, apy = aux;
+
+        // Arrowhead tip sits at cvTip; base of triangle is HEAD_SIZE back
+        const baseX = cvTipX - aux * HEAD_SIZE;
+        const baseY = cvTipY - auy * HEAD_SIZE;
+
+        const wing1X = baseX + apx * HEAD_SIZE * 0.6;
+        const wing1Y = baseY + apy * HEAD_SIZE * 0.6;
+        const wing2X = baseX - apx * HEAD_SIZE * 0.6;
+        const wing2Y = baseY - apy * HEAD_SIZE * 0.6;
+
+        // Shaft: draw from tail to base of triangle (so line doesn't overlap head)
+        c += `<line
+          x1="${cvTailX.toFixed(1)}" y1="${cvTailY.toFixed(1)}"
+          x2="${baseX.toFixed(1)}"  y2="${baseY.toFixed(1)}"
+          stroke="${COLORS.accent}" stroke-width="2.5" stroke-linecap="round"/>`;
+
+        // Filled arrowhead triangle
+        c += `<polygon
+          points="${cvTipX.toFixed(1)},${cvTipY.toFixed(1)} ${wing1X.toFixed(1)},${wing1Y.toFixed(1)} ${wing2X.toFixed(1)},${wing2Y.toFixed(1)}"
+          fill="${COLORS.accent}" stroke="${COLORS.accent}" stroke-width="1" stroke-linejoin="round"/>`;
       }
     }
   }
@@ -900,17 +943,22 @@ export const generatePdfDownload = async (req, res) => {
       try {
         const pd = validPaths[pathIndex];
 
-        // 🟢 Use path‑specific flags, fallback to project defaults
+        // ✅ Per‑path overrides for border and opposite lines
+        const pathShowBorder      = pd.showBorder ?? showBorder;
+        const pathBorderOffsetDir = pd.borderOffsetDirection ?? borderOffsetDirection;
+
         const pathShowOppositeLines = pd.showOppositeLines ?? projShowOppositeLines;
-        const pathOppositeLinesDir = pd.oppositeLinesDirection ?? projOppositeLinesDirection ?? 'far';
+        const pathOppositeLinesDir  = pd.oppositeLinesDirection ?? projOppositeLinesDirection ?? 'far';
 
         const bounds = calculateBounds(
-          pd, scale, showBorder, borderOffsetDirection,
-          labelPositions, commits, pathShowOppositeLines, pathOppositeLinesDir
+          pd, scale, pathShowBorder, pathBorderOffsetDir,
+          labelPositions, commits,
+          pathShowOppositeLines, pathOppositeLinesDir
         );
         const svg = generateSvg(
-          pd, bounds, scale, showBorder, borderOffsetDirection,
-          labelPositions, commits, pathShowOppositeLines, pathOppositeLinesDir,
+          pd, bounds, scale, pathShowBorder, pathBorderOffsetDir,
+          labelPositions, commits,
+          pathShowOppositeLines, pathOppositeLinesDir,
           SVG_PX
         );
 
