@@ -64,7 +64,7 @@ const FONTS = {
 // ─── Diagram constants ────────────────────────────────────────────────────────
 const FOLD_LENGTH         = 14;
 const ARROW_SIZE          = 12;
-const FOLD_LABEL_DISTANCE = 60;
+const FOLD_LABEL_DISTANCE = 80;   // increased from 60 to prevent overlap
 const OPPOSITE_LINES_LEN  = 150;
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -256,7 +256,14 @@ const mmStr = lengthStr => {
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SVG GENERATOR
+// SVG GENERATOR (with automatic label positioning)
+// ═════════════════════════════════════════════════════════════════════════════
+// ─── Constants (replace FOLD_LABEL_DISTANCE with a pixel constant) ───────────
+const FOLD_LABEL_PX = 50;      // initial distance from path endpoint in canvas px
+const LABEL_CLEARANCE_PX = 6;  // extra safety margin
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SVG GENERATOR (fully collision‑avoidant)
 // ═════════════════════════════════════════════════════════════════════════════
 const generateSvg = (
   path, bounds, scale, showBorder, borderOffsetDirection,
@@ -302,6 +309,233 @@ const generateSvg = (
   const ARROW_SZ  = 8;
   const SHADOW_B  = 2;
 
+  // ── Gather all drawn line segments (canvas coords) for collision avoidance ──
+  const lineSegments = [];  // each: { x1, y1, x2, y2, strokeWidth? }
+
+  // path segments
+  for (let i = 0; i < path.points.length - 1; i++) {
+    const a = tc(path.points[i].x, path.points[i].y);
+    const b = tc(path.points[i + 1].x, path.points[i + 1].y);
+    lineSegments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, sw: PATH_SW });
+  }
+
+  // opposite lines
+  if (showOppositeLines) {
+    const angle  = oppositeLinesDirection === 'far' ? 135 : 315;
+    const rad    = angle * Math.PI / 180;
+    const dx     = Math.cos(rad), dy = Math.sin(rad);
+    path.points.forEach(p => {
+      const x = parseFloat(p.x), y = parseFloat(p.y);
+      const s = tc(x, y);
+      const e = tc(x + dx * OPPOSITE_LINES_LEN, y + dy * OPPOSITE_LINES_LEN);
+      lineSegments.push({ x1: s.x, y1: s.y, x2: e.x, y2: e.y, sw: OPP_SW });
+    });
+  }
+
+  // border offset segments
+  if (showBorder && path.points.length > 1) {
+    const segs = calcOffsetSegments(path, borderOffsetDirection, 15);
+    segs.forEach(s => {
+      const a = tc(s.p1.x, s.p1.y), b = tc(s.p2.x, s.p2.y);
+      lineSegments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, sw: BORDER_SW });
+    });
+  }
+
+  // fold lines (pre‑compute now so we can add them to lineSegments)
+  const foldLines = []; // will store { svgString, labelBaseCanvas, directionCanvas, foldType, ... }
+  (path.segments || []).forEach((seg, i) => {
+    const p1 = path.points[i], p2 = path.points[i + 1];
+    if (!p1 || !p2) return;
+
+    let fType = 'None', fLen = FOLD_LENGTH, fAngle = 0, fTail = 20, fFlip = false;
+    if (typeof seg.fold === 'object' && seg.fold) {
+      fType  = seg.fold.type  || 'None';
+      fLen   = parseFloat(seg.fold.length) || FOLD_LENGTH;
+      fAngle = parseFloat(seg.fold.angle)  || 0;
+      fTail  = parseFloat(seg.fold.tailLength) || 20;
+      fFlip  = !!seg.fold.flipped;
+    } else {
+      fType = seg.fold || 'None';
+    }
+
+    const isFirst = i === 0;
+    const isLast  = i === path.points.length - 2;
+    if (fType === 'None' || (!isFirst && !isLast)) return;
+
+    const dx = parseFloat(p2.x) - parseFloat(p1.x);
+    const dy = parseFloat(p2.y) - parseFloat(p1.y);
+    const sl = Math.sqrt(dx * dx + dy * dy);
+    if (sl === 0) return;
+
+    const ux = dx / sl, uy = dy / sl;
+    const bx = isFirst ? parseFloat(p1.x) : parseFloat(p2.x);
+    const by = isFirst ? parseFloat(p1.y) : parseFloat(p2.y);
+    const baseCanvas = tc(bx, by);
+
+    // Perpendicular direction outward from the path (in canvas space)
+    // For a segment at the endpoint, outward normal = ±(-uy, ux) chosen to point away from interior
+    // Simply use the perpendicular that points away from the next/previous point
+    const refX = isFirst ? parseFloat(p2.x) : parseFloat(p1.x);
+    const refY = isFirst ? parseFloat(p2.y) : parseFloat(p1.y);
+    const toRefX = refX - bx, toRefY = refY - by;
+    let nx = -uy, ny = ux;  // one perpendicular
+    // choose the direction that points away from the interior (i.e., dot with (ref - base) < 0 for "inside"?)
+    if (nx * toRefX + ny * toRefY > 0) { nx = -nx; ny = -ny; } // flip to point outward
+    const dirCanvas = { x: nx, y: ny }; // not scaled, it's unit in original coords but will be used for canvas directions after scaling? Actually, we need the direction in canvas space. The perpendicular defined in original coords will still be a valid direction vector after scaling, but its length will be scaled. For a pure direction we can just use ( -uy, ux ) in original and then convert to canvas: it's still a unit vector in original space, but in canvas space it will have length proportional to sf. That's okay because we'll multiply by pixel distance later. For simplicity, compute the canvas direction directly: take the canvas segment endpoints, compute its unit vector, then rotate. Let's do canvas direction.
+    const end1 = tc(p1.x, p1.y), end2 = tc(p2.x, p2.y);
+    const sux = end2.x - end1.x, suy = end2.y - end1.y;
+    const slen = Math.sqrt(sux * sux + suy * suy) || 1;
+    const suxUnit = sux / slen, suyUnit = suy / slen;
+    let snx = -suyUnit, sny = suxUnit;
+    // outward check: from base toward the interior point (the other endpoint)
+    const otherCanvas = isFirst ? end2 : end1;
+    const toOtherX = otherCanvas.x - baseCanvas.x;
+    const toOtherY = otherCanvas.y - baseCanvas.y;
+    if (snx * toOtherX + sny * toOtherY > 0) { snx = -snx; sny = -sny; }
+
+    // Build the fold line SVG
+    let fPath = '';
+    if (fType === 'Crush') {
+      let onx = isFirst ? -uy : uy, ony = isFirst ? ux : -ux; // original perp
+      if (fFlip) { onx = -onx; ony = -ony; }
+      const rad = fAngle * Math.PI / 180;
+      const cA = Math.cos(rad), sA = Math.sin(rad);
+      const rNX = onx * cA - ony * sA, rNY = onx * sA + ony * cA;
+      const cW  = fLen * 0.8, cH = fLen * 0.6;
+      const bs  = fFlip ? -1 : 1;
+      const cp1x = bx + rNX * cW / 3 + bs * (-rNY * cH), cp1y = by + rNY * cW / 3 + bs * (rNX * cH);
+      const cp2x = bx + rNX * 2 * cW / 3 + bs * (-rNY * cH), cp2y = by + rNY * 2 * cW / 3 + bs * (rNX * cH);
+      const cEx  = bx + rNX * cW, cEy = by + rNY * cW;
+      const tdx  = isFirst ? ux : -ux, tdy = isFirst ? uy : -uy;
+      const tx   = cEx + tdx * fTail, ty = cEy + tdy * fTail;
+      const ss = tc(bx, by), c1 = tc(cp1x, cp1y), c2 = tc(cp2x, cp2y), ce = tc(cEx, cEy), et = tc(tx, ty);
+      fPath = `M${ss.x.toFixed(1)},${ss.y.toFixed(1)} C${c1.x.toFixed(1)},${c1.y.toFixed(1)} ${c2.x.toFixed(1)},${c2.y.toFixed(1)} ${ce.x.toFixed(1)},${ce.y.toFixed(1)} L${et.x.toFixed(1)},${et.y.toFixed(1)}`;
+      // add approximate segments for collision detection (sample a few points along the curve)
+      const curvePoints = [ss, c1, c2, ce, et];
+      for (let j = 0; j < curvePoints.length - 1; j++) {
+        lineSegments.push({ x1: curvePoints[j].x, y1: curvePoints[j].y, x2: curvePoints[j+1].x, y2: curvePoints[j+1].y, sw: FOLD_SW });
+      }
+    } else {
+      const fa  = (fFlip ? 360 - fAngle : fAngle) * Math.PI / 180;
+      const bdx = isFirst ? ux : -ux, bdy = isFirst ? uy : -uy;
+      const fdx = bdx * Math.cos(fa) - bdy * Math.sin(fa);
+      const fdy = bdx * Math.sin(fa) + bdy * Math.cos(fa);
+      const sb2 = tc(bx, by), se = tc(bx + fdx * fLen, by + fdy * fLen);
+      fPath = `M${sb2.x.toFixed(1)},${sb2.y.toFixed(1)} L${se.x.toFixed(1)},${se.y.toFixed(1)}`;
+      lineSegments.push({ x1: sb2.x, y1: sb2.y, x2: se.x, y2: se.y, sw: FOLD_SW });
+    }
+
+    foldLines.push({
+      svg: fPath,
+      baseCanvas,
+      dirCanvas: { x: snx, y: sny },   // outward perpendicular direction in canvas
+      type: fType,
+      isFirst,
+    });
+  });
+
+  // ── Helper: distance from point to segment ────────────────────────────────
+  const distToSegment = (px, py, x1, y1, x2, y2) => {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const nearX = x1 + t * dx, nearY = y1 + t * dy;
+    return Math.hypot(px - nearX, py - nearY);
+  };
+
+  // ── Label adjustment (checks all lineSegments) ────────────────────────────
+  const adjustLabel = (cx, cy, w, featureX, featureY) => {
+    let bestX = cx, bestY = cy;
+    let minDist = Infinity;
+    const halfDiag = Math.hypot(w / 2, LABEL_H / 2);
+
+    // current minimum distance to any line segment
+    const getMinDist = (x, y) => {
+      let md = Infinity;
+      for (const seg of lineSegments) {
+        const d = distToSegment(x, y, seg.x1, seg.y1, seg.x2, seg.y2);
+        if (d < md) md = d;
+      }
+      return md;
+    };
+
+    minDist = getMinDist(cx, cy);
+    const clearance = halfDiag + PATH_SW / 2 + LABEL_CLEARANCE_PX; // use worst-case stroke
+    if (minDist >= clearance) return { x: cx, y: cy };
+
+    // Iteratively push away from the closest line
+    for (let iter = 0; iter < 20; iter++) {
+      // find closest segment
+      let closestDist = Infinity;
+      let closestSeg = null;
+      for (const seg of lineSegments) {
+        const d = distToSegment(cx, cy, seg.x1, seg.y1, seg.x2, seg.y2);
+        if (d < closestDist) {
+          closestDist = d;
+          closestSeg = seg;
+        }
+      }
+      if (!closestSeg) break;
+
+      // nearest point on that segment
+      const { x1, y1, x2, y2 } = closestSeg;
+      const dx = x2 - x1, dy = y2 - y1;
+      const len2 = dx * dx + dy * dy;
+      let t = ((cx - x1) * dx + (cy - y1) * dy) / (len2 || 1);
+      t = Math.max(0, Math.min(1, t));
+      const nearX = x1 + t * dx, nearY = y1 + t * dy;
+
+      // push direction from nearest point to label centre
+      let pushX = cx - nearX, pushY = cy - nearY;
+      const pushLen = Math.hypot(pushX, pushY) || 1;
+      pushX /= pushLen; pushY /= pushLen;
+
+      // step size: larger if very close
+      const step = closestDist < 10 ? 12 : 6;
+      const nx = cx + pushX * step;
+      const ny = cy + pushY * step;
+
+      const newDist = getMinDist(nx, ny);
+      if (newDist >= clearance) {
+        return { x: nx, y: ny };
+      }
+      cx = nx; cy = ny;
+      if (newDist > minDist) {
+        minDist = newDist;
+        bestX = cx; bestY = cy;
+      }
+    }
+    return { x: bestX, y: bestY };
+  };
+
+  // ── Tail shape helper (unchanged) ──────────────────────────────────────────
+  const makeTail = (px, py, tx, ty, tw) => {
+    const ldx = tx - px, ldy = ty - py;
+    if (Math.abs(ldx) > Math.abs(ldy)) {
+      const bx  = ldx < 0 ? px - tw / 2 : px + tw / 2;
+      const dir = ldx < 0 ? -ARROW_SZ : ARROW_SZ;
+      return `M${bx} ${py - ARROW_SZ / 2} L${bx} ${py + ARROW_SZ / 2} L${bx + dir} ${py} Z`;
+    } else {
+      const by  = ldy < 0 ? py - LABEL_H / 2 : py + LABEL_H / 2;
+      const dir = ldy < 0 ? -ARROW_SZ : ARROW_SZ;
+      return `M${px - ARROW_SZ / 2} ${by} L${px + ARROW_SZ / 2} ${by} L${px} ${by + dir} Z`;
+    }
+  };
+
+  const labelPill = (px, py, text, fillColor = '#ffffff', textColor = '#111827', arrowFill = '#111827', tailPath = '') =>
+    `<g filter="url(#ds)">
+      <rect x="${(px - Math.max(60, text.length * 7.5 + 16) / 2).toFixed(1)}" y="${(py - LABEL_H / 2).toFixed(1)}" width="${Math.max(60, text.length * 7.5 + 16).toFixed(1)}" height="${LABEL_H}" fill="${fillColor}" rx="${LABEL_RX}" stroke="#d1d5db" stroke-width="0.8"/>
+      ${tailPath ? `<path d="${tailPath}" fill="${arrowFill}"/>` : ''}
+      <text x="${px.toFixed(1)}" y="${py.toFixed(1)}" font-size="${FONT_SZ}" font-family="Helvetica, Arial, sans-serif" font-weight="600" fill="${textColor}" text-anchor="middle" dominant-baseline="middle">${text}</text>
+    </g>`;
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // BUILD SVG OUTPUT
+  // ═════════════════════════════════════════════════════════════════════════
+
+  // Grid backgrounds
   const targetGridPx = 50;
   const rawStep      = targetGridPx / sf;
   const magnitude    = Math.pow(10, Math.floor(Math.log10(rawStep)));
@@ -359,7 +593,7 @@ const generateSvg = (
     });
   }
 
-  // ── Border (dashed offset) + ARROW (line + chevron head = → style) ───────
+  // ── Border (dashed offset) + arrow ───────────────────────────────────────
   if (showBorder && path.points.length > 1) {
     const segs = calcOffsetSegments(path, borderOffsetDirection, 15);
     segs.forEach(s => {
@@ -367,7 +601,6 @@ const generateSvg = (
       c += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#374151" stroke-width="${BORDER_SW}" stroke-dasharray="8,5"/>`;
     });
 
-    // ── Draw → style indicator arrow on the first segment midpoint ─────────
     if (segs.length > 0 && path.points[0] && path.points[1]) {
       const p1 = path.points[0], p2 = path.points[1];
       const dx  = parseFloat(p2.x) - parseFloat(p1.x);
@@ -378,35 +611,27 @@ const generateSvg = (
         const mx = (parseFloat(p1.x) + parseFloat(p2.x)) / 2;
         const my = (parseFloat(p1.y) + parseFloat(p2.y)) / 2;
 
-        // Normal vector pointing away from path (toward border side)
         const nx = borderOffsetDirection === 'inside' ? -uy :  uy;
         const ny = borderOffsetDirection === 'inside' ?  ux : -ux;
 
-        // Arrow points TOWARD the path (tip at path side, tail away)
-        const ARROW_TAIL_LEN = 28;  // length of the shaft
-        const HEAD_SIZE      = 9;   // half-width of arrowhead triangle
-        const OFFSET         = 8;   // gap from the path midpoint
+        const ARROW_TAIL_LEN = 28;
+        const HEAD_SIZE      = 9;
+        const OFFSET         = 8;
 
-        // Tip of arrow points TOWARD the path (close side)
         const tipX = mx + nx * OFFSET;
         const tipY = my + ny * OFFSET;
 
-        // Tail is further away from the path
         const tailX = mx + nx * (OFFSET + ARROW_TAIL_LEN);
         const tailY = my + ny * (OFFSET + ARROW_TAIL_LEN);
 
         const { x: cvTipX, y: cvTipY }   = tc(tipX,  tipY);
         const { x: cvTailX, y: cvTailY } = tc(tailX, tailY);
 
-        // Direction unit vector from tail → tip in canvas coords
         const adx = cvTipX - cvTailX, ady = cvTipY - cvTailY;
         const alen = Math.sqrt(adx * adx + ady * ady) || 1;
         const aux = adx / alen, auy = ady / alen;
-
-        // Perpendicular for arrowhead wings
         const apx = -auy, apy = aux;
 
-        // Arrowhead tip sits at cvTip; base of triangle is HEAD_SIZE back
         const baseX = cvTipX - aux * HEAD_SIZE;
         const baseY = cvTipY - auy * HEAD_SIZE;
 
@@ -415,16 +640,8 @@ const generateSvg = (
         const wing2X = baseX - apx * HEAD_SIZE * 0.6;
         const wing2Y = baseY - apy * HEAD_SIZE * 0.6;
 
-        // Shaft: draw from tail to base of triangle (so line doesn't overlap head)
-        c += `<line
-          x1="${cvTailX.toFixed(1)}" y1="${cvTailY.toFixed(1)}"
-          x2="${baseX.toFixed(1)}"  y2="${baseY.toFixed(1)}"
-          stroke="${COLORS.accent}" stroke-width="2.5" stroke-linecap="round"/>`;
-
-        // Filled arrowhead triangle
-        c += `<polygon
-          points="${cvTipX.toFixed(1)},${cvTipY.toFixed(1)} ${wing1X.toFixed(1)},${wing1Y.toFixed(1)} ${wing2X.toFixed(1)},${wing2Y.toFixed(1)}"
-          fill="${COLORS.accent}" stroke="${COLORS.accent}" stroke-width="1" stroke-linejoin="round"/>`;
+        c += `<line x1="${cvTailX.toFixed(1)}" y1="${cvTailY.toFixed(1)}" x2="${baseX.toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="${COLORS.accent}" stroke-width="2.5" stroke-linecap="round"/>`;
+        c += `<polygon points="${cvTipX.toFixed(1)},${cvTipY.toFixed(1)} ${wing1X.toFixed(1)},${wing1Y.toFixed(1)} ${wing2X.toFixed(1)},${wing2Y.toFixed(1)}" fill="${COLORS.accent}" stroke="${COLORS.accent}" stroke-width="1" stroke-linejoin="round"/>`;
       }
     }
   }
@@ -441,117 +658,58 @@ const generateSvg = (
     c += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${POINT_R}" fill="#1e293b" stroke="#fff" stroke-width="1.5" filter="url(#ds)"/>`;
   });
 
-  const makeTail = (px, py, tx, ty, tw, lh) => {
-    const ldx = tx - px, ldy = ty - py;
-    if (Math.abs(ldx) > Math.abs(ldy)) {
-      const bx  = ldx < 0 ? px - tw / 2 : px + tw / 2;
-      const dir = ldx < 0 ? -ARROW_SZ : ARROW_SZ;
-      return `M${bx} ${py - ARROW_SZ / 2} L${bx} ${py + ARROW_SZ / 2} L${bx + dir} ${py} Z`;
-    } else {
-      const by  = ldy < 0 ? py - lh / 2 : py + lh / 2;
-      const dir = ldy < 0 ? -ARROW_SZ : ARROW_SZ;
-      return `M${px - ARROW_SZ / 2} ${by} L${px + ARROW_SZ / 2} ${by} L${px} ${by + dir} Z`;
-    }
-  };
+  // ── Fold lines (draw them now, labels will be placed later) ────────────────
+  foldLines.forEach(fl => {
+    c += `<path d="${fl.svg}" stroke="#374151" stroke-width="${FOLD_SW}" fill="none" stroke-linecap="round"/>`;
+  });
 
-  const labelPill = (px, py, text, fillColor = '#ffffff', textColor = '#111827', arrowFill = '#111827', tailPath = '') =>
-    `<g filter="url(#ds)">
-      <rect x="${(px - Math.max(60, text.length * 7.5 + 16) / 2).toFixed(1)}" y="${(py - LABEL_H / 2).toFixed(1)}" width="${Math.max(60, text.length * 7.5 + 16).toFixed(1)}" height="${LABEL_H}" fill="${fillColor}" rx="${LABEL_RX}" stroke="#d1d5db" stroke-width="0.8"/>
-      ${tailPath ? `<path d="${tailPath}" fill="${arrowFill}"/>` : ''}
-      <text x="${px.toFixed(1)}" y="${py.toFixed(1)}" font-size="${FONT_SZ}" font-family="Helvetica, Arial, sans-serif" font-weight="600" fill="${textColor}" text-anchor="middle" dominant-baseline="middle">${text}</text>
-    </g>`;
-
-  c += (path.segments || []).map((seg, i) => {
+  // ── SEGMENT LENGTH LABELS ─────────────────────────────────────────────────
+  (path.segments || []).forEach((seg, i) => {
     const p1 = path.points[i], p2 = path.points[i + 1];
-    if (!p1 || !p2 || !seg.labelPosition) return '';
+    if (!p1 || !p2 || !seg.labelPosition) return;
 
-    const { x: px, y: py }   = tc(seg.labelPosition.x, seg.labelPosition.y);
-    const { x: p1x, y: p1y } = tc(p1.x, p1.y);
-    const { x: p2x, y: p2y } = tc(p2.x, p2.y);
-    const midX = (p1x + p2x) / 2, midY = (p1y + p2y) / 2;
+    let { x: origPx, y: origPy } = tc(seg.labelPosition.x, seg.labelPosition.y);
+    const midC = tc((parseFloat(p1.x) + parseFloat(p2.x)) / 2, (parseFloat(p1.y) + parseFloat(p2.y)) / 2);
     const text  = mmStr(seg.length || '');
     const tw    = Math.max(60, text.length * 7.5 + 16);
-    const tail  = makeTail(px, py, midX, midY, tw, LABEL_H);
-    let out     = labelPill(px, py, text, '#ffffff', '#111827', '#111827', tail);
 
-    let fType = 'None', fLen = FOLD_LENGTH, fAngle = 0, fTail = 20, fFlip = false;
-    if (typeof seg.fold === 'object' && seg.fold) {
-      fType  = seg.fold.type  || 'None';
-      fLen   = parseFloat(seg.fold.length) || FOLD_LENGTH;
-      fAngle = parseFloat(seg.fold.angle)  || 0;
-      fTail  = parseFloat(seg.fold.tailLength) || 20;
-      fFlip  = !!seg.fold.flipped;
-    } else {
-      fType = seg.fold || 'None';
-    }
+    const adjusted = adjustLabel(origPx, origPy, tw, midC.x, midC.y);
+    const tail = makeTail(adjusted.x, adjusted.y, midC.x, midC.y, tw);
+    c += labelPill(adjusted.x, adjusted.y, text, '#ffffff', '#111827', '#111827', tail);
+  });
 
-    const isFirst = i === 0;
-    const isLast  = i === path.points.length - 2;
+  // ── FOLD LABELS (placed after fold lines, using outward perpendicular) ───
+  foldLines.forEach((fl) => {
+    const flt = fl.type.toUpperCase();
+    const ftw = Math.max(60, flt.length * 7.5 + 16);
+    // initial label position: baseCanvas + dirCanvas * FOLD_LABEL_PX
+    let lx = fl.baseCanvas.x + fl.dirCanvas.x * FOLD_LABEL_PX;
+    let ly = fl.baseCanvas.y + fl.dirCanvas.y * FOLD_LABEL_PX;
+    const adjusted = adjustLabel(lx, ly, ftw, fl.baseCanvas.x, fl.baseCanvas.y);
+    const ftail = makeTail(adjusted.x, adjusted.y, fl.baseCanvas.x, fl.baseCanvas.y, ftw);
+    c += labelPill(adjusted.x, adjusted.y, flt, '#f0f9ff', '#1d4ed8', '#1d4ed8', ftail);
+  });
 
-    if (fType !== 'None' && (isFirst || isLast)) {
-      const dx  = parseFloat(p2.x) - parseFloat(p1.x);
-      const dy  = parseFloat(p2.y) - parseFloat(p1.y);
-      const sl  = Math.sqrt(dx * dx + dy * dy);
-      if (sl !== 0) {
-        const ux = dx / sl, uy = dy / sl;
-        const bx = isFirst ? parseFloat(p1.x) : parseFloat(p2.x);
-        const by = isFirst ? parseFloat(p1.y) : parseFloat(p2.y);
-        let fPath = '';
-
-        if (fType === 'Crush') {
-          let nx = isFirst ? -uy : uy, ny = isFirst ? ux : -ux;
-          if (fFlip) { nx = -nx; ny = -ny; }
-          const rad = fAngle * Math.PI / 180;
-          const cA = Math.cos(rad), sA = Math.sin(rad);
-          const rNX = nx * cA - ny * sA, rNY = nx * sA + ny * cA;
-          const cW  = fLen * 0.8, cH = fLen * 0.6;
-          const bs  = fFlip ? -1 : 1;
-          const cp1x = bx + rNX * cW / 3 + bs * (-rNY * cH), cp1y = by + rNY * cW / 3 + bs * (rNX * cH);
-          const cp2x = bx + rNX * 2 * cW / 3 + bs * (-rNY * cH), cp2y = by + rNY * 2 * cW / 3 + bs * (rNX * cH);
-          const cEx  = bx + rNX * cW, cEy = by + rNY * cW;
-          const tdx  = isFirst ? ux : -ux, tdy = isFirst ? uy : -uy;
-          const tx   = cEx + tdx * fTail, ty = cEy + tdy * fTail;
-          const ss = tc(bx, by), c1 = tc(cp1x, cp1y), c2 = tc(cp2x, cp2y), ce = tc(cEx, cEy), et = tc(tx, ty);
-          fPath = `M${ss.x.toFixed(1)},${ss.y.toFixed(1)} C${c1.x.toFixed(1)},${c1.y.toFixed(1)} ${c2.x.toFixed(1)},${c2.y.toFixed(1)} ${ce.x.toFixed(1)},${ce.y.toFixed(1)} L${et.x.toFixed(1)},${et.y.toFixed(1)}`;
-        } else {
-          const fa  = (fFlip ? 360 - fAngle : fAngle) * Math.PI / 180;
-          const bdx = isFirst ? ux : -ux, bdy = isFirst ? uy : -uy;
-          const fdx = bdx * Math.cos(fa) - bdy * Math.sin(fa);
-          const fdy = bdx * Math.sin(fa) + bdy * Math.cos(fa);
-          const sb2 = tc(bx, by), se = tc(bx + fdx * fLen, by + fdy * fLen);
-          fPath = `M${sb2.x.toFixed(1)},${sb2.y.toFixed(1)} L${se.x.toFixed(1)},${se.y.toFixed(1)}`;
-        }
-
-        out += `<path d="${fPath}" stroke="#374151" stroke-width="${FOLD_SW}" fill="none" stroke-linecap="round"/>`;
-
-        const flp = calcFoldLabelPos(seg, isFirst, p1, p2, fType, fAngle, fFlip);
-        if (flp) {
-          const { x: flX, y: flY } = tc(flp.x, flp.y);
-          const { x: tgX, y: tgY } = tc(bx, by);
-          const flt  = fType.toUpperCase();
-          const ftw  = Math.max(60, flt.length * 7.5 + 16);
-          const ftail = makeTail(flX, flY, tgX, tgY, ftw, LABEL_H);
-          out += labelPill(flX, flY, flt, '#f0f9ff', '#1d4ed8', '#1d4ed8', ftail);
-        }
-      }
-    }
-    return out;
-  }).join('');
-
-  c += (path.angles || []).map(angle => {
-    if (!angle.labelPosition) return '';
+  // ── ANGLE LABELS ──────────────────────────────────────────────────────────
+  (path.angles || []).forEach(angle => {
+    if (!angle.labelPosition) return;
     const av = Math.round(parseFloat(angle.angle.replace(/°/g, '')));
-    if ([90, 270, 45, 315].includes(av)) return '';
-    const { x: px, y: py } = tc(angle.labelPosition.x, angle.labelPosition.y);
-    const vx = angle.vertexIndex && path.points[angle.vertexIndex] ? path.points[angle.vertexIndex].x : angle.labelPosition.x;
-    const vy = angle.vertexIndex && path.points[angle.vertexIndex] ? path.points[angle.vertexIndex].y : angle.labelPosition.y;
-    const { x: tx2, y: ty2 } = tc(vx, vy);
+    if ([90, 270, 45, 315].includes(av)) return;
+
+    let { x: origPx, y: origPy } = tc(angle.labelPosition.x, angle.labelPosition.y);
+    const vertexIdx = angle.vertexIndex;
+    const vx = vertexIdx !== undefined && path.points[vertexIdx] ? path.points[vertexIdx].x : angle.labelPosition.x;
+    const vy = vertexIdx !== undefined && path.points[vertexIdx] ? path.points[vertexIdx].y : angle.labelPosition.y;
+    const { x: vertX, y: vertY } = tc(vx, vy);
     const text = `${av}°`;
     const tw   = Math.max(60, text.length * 7.5 + 16);
-    const tail = makeTail(px, py, tx2, ty2, tw, LABEL_H);
-    return labelPill(px, py, text, '#fff7ed', '#c2410c', '#c2410c', tail);
-  }).join('');
 
+    const adjusted = adjustLabel(origPx, origPy, tw, vertX, vertY);
+    const tail = makeTail(adjusted.x, adjusted.y, vertX, vertY, tw);
+    c += labelPill(adjusted.x, adjusted.y, text, '#fff7ed', '#c2410c', '#c2410c', tail);
+  });
+
+  // ── COMMIT LABELS ─────────────────────────────────────────────────────────
   commits.forEach(commit => {
     if (!commit.position) return;
     const { x: px, y: py } = tc(commit.position.x, commit.position.y);
@@ -565,7 +723,6 @@ const generateSvg = (
     <g clip-path="url(#clip)">${c}</g>
   </svg>`;
 };
-
 // ═════════════════════════════════════════════════════════════════════════════
 // PDF DRAWING HELPERS
 // ═════════════════════════════════════════════════════════════════════════════
@@ -978,7 +1135,7 @@ export const generatePdfDownload = async (req, res) => {
 
       } catch (err) {
         console.warn(`Render error path ${pathIndex}:`, err.message);
-        doc.font(FONTS.body).fontSize(11).fillColor(COLORS.darkText)
+        oc.font(FONTS.body).fontSize(11).fillColor(COLORS.darkText)
           .text('Diagram unavailable', colX, yPos + 10);
       }
     };
